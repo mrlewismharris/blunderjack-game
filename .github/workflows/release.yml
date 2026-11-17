@@ -92,9 +92,10 @@ jobs:
           $dir = 'blunderjack-${{ matrix.platform }}'
           New-Item -ItemType Directory -Path $dir | Out-Null
           Copy-Item 'target/${{ matrix.target }}/release/blunderjack-client.exe', 'target/${{ matrix.target }}/release/blunderjack-server.exe', 'README.md', 'client/vendor/THREE-LICENSE.txt', 'client/cards/ARTWORK-LICENSE.txt' $dir
-          $loader = Get-ChildItem 'target/${{ matrix.target }}/release/build/webview2-com-sys-*/out/x64/WebView2Loader.dll'
-          if (@($loader).Count -ne 1) { throw 'Expected exactly one x64 WebView2 loader' }
-          Copy-Item $loader.FullName $dir
+          $metadata = cargo metadata --locked --format-version 1 --filter-platform '${{ matrix.target }}' | ConvertFrom-Json
+          $webview = $metadata.packages | Where-Object name -EQ 'webview2-com-sys'
+          $loader = Join-Path (Split-Path $webview.manifest_path) 'x64/WebView2Loader.dll'
+          Copy-Item -LiteralPath $loader -Destination $dir
           Compress-Archive -Path $dir -DestinationPath "$dir.zip"
       - name: Package Unix binaries
         if: runner.os != 'Windows'
