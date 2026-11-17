@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>BlunderJack</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <main>
+        <section
+          id="welcome"
+          class="welcome-screen intro-pending"
+          aria-labelledby="game-title"
+        >
+          <div class="welcome-menu">
+            <div class="welcome-heading">
+              <h1 id="game-title">BlunderJack</h1>
+              <p class="welcome-credit">By Lewis</p>
+            </div>
+            <div class="menu-actions" role="group" aria-label="Main menu">
+              <button type="button" id="open-connect">Join a table</button>
+              <button type="button" id="open-profile">Edit character</button>
+              <button type="button" id="options-button">Options</button>
+              <button type="button" id="rules-button">Rules</button>
+            </div>
+            <p id="menu-status" role="status"></p>
+          </div>
+          <div
+            id="intro-card"
+            class="playing-card intro-card"
+            aria-hidden="true"
+          ></div>
+        </section>
+        <section id="table-screen" class="hidden" aria-labelledby="table-state">
+          <aside
+            id="scoreboard"
+            class="scoreboard hidden"
+            aria-label="Scoreboard"
+          >
+            <h2>Scoreboard</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Player</th>
+                  <th scope="col">1st</th>
+                  <th scope="col">2nd</th>
+                  <th scope="col">3rd</th>
+                  <th scope="col">Losses</th>
+                  <th scope="col">Ping (ms)</th>
+                </tr>
+              </thead>
+              <tbody id="scoreboard-rows"></tbody>
+            </table>
+          </aside>
+          <div
+            id="table-controls"
+            class="table-controls"
+            aria-label="Table controls"
+          >
+            <div
+              id="controls-handle"
+              class="controls-handle"
+              title="Drag to move controls"
+              aria-hidden="true"
+            >
+              ⠿
+            </div>
+            <div class="camera-controls">
+              <button id="camera-overview" class="quiet-button">
+                Centre Camera
+              </button>
+              <button
+                id="camera-first-person"
+                class="quiet-button"
+                aria-pressed="false"
+                disabled
+              >
+                First Person
+              </button>
+              <button
+                id="camera-follow"
+                class="quiet-button"
+                aria-label="Follow the active player"
+                aria-pressed="true"
+              >
+                Follow: On
+              </button>
+            </div>
+            <button
+              id="look-button"
+              class="quiet-button"
+              aria-pressed="false"
+              disabled
+            >
+              Look
+            </button>
+            <button id="watch-button" class="quiet-button hidden">
+              Stand up
+            </button>
+            <button id="menu-button" class="quiet-button">Menu</button>
+            <span id="connection-status" role="status" class="hidden"></span>
+          </div>
+          <div class="table-scene">
+            <div class="table-3d" aria-hidden="true">
+              <div class="table-felt"></div>
+            </div>
+            <div class="table-hud">
+              <div class="turn-status">
+                <div id="fps-counter" class="fps-counter hidden" aria-live="off">FPS: —</div>
+                <h2 id="table-state" aria-live="polite">Choose a seat</h2>
+                <p id="table-subtitle"></p>
+              </div>
+            </div>
+            <div id="seats" class="seats" aria-label="Seats"></div>
+            <div class="table-piles">
+              <div id="last-play" class="last-play hidden">
+                <div id="last-play-label" class="last-play-label"></div>
+                <div id="last-play-cards" class="last-play-cards" role="group" aria-labelledby="last-play-label"></div>
+              </div>
+              <div class="pile">
+                <span class="card-back mini-card" aria-hidden="true"
+                  >&#9824;</span
+                >
+                <div>Pickup <strong id="pickup-count">&#8212;</strong></div>
+              </div>
+              <div class="pile">
+                <span id="pot-card" class="playing-card mini-card empty-card"
+                  >&#8212;</span
+                >
+                <div>
+                  Pot <strong id="pot-count">&#8212;</strong
+                  ><span id="pot-penalty"></span>
+                </div>
+              </div>
+            </div>
+            <aside
+              id="activity-panel"
+              class="activity-panel"
+              aria-label="Activity and chat"
+            >
+              <div
+                id="activity-handle"
+                class="activity-handle"
+                tabindex="0"
+                aria-label="Move activity panel with arrow keys"
+              >
+                <strong>Activity and Chat</strong
+                ><span aria-hidden="true">&#8942;&#8942;</span>
+              </div>
+              <div
+                id="activity-log"
+                class="activity-log"
+                role="log"
+                aria-label="Activity and chat history"
+                aria-live="polite"
+                tabindex="0"
+              ></div>
+              <form id="chat-form" class="chat-form">
+                <input
+                  id="chat-input"
+                  type="text"
+                  aria-label="Chat message"
+                  placeholder="Type a message…"
+                  autocomplete="off"
+                  maxlength="560"
+                  disabled
+                />
+                <button id="chat-send" type="submit" class="quiet-button" disabled>
+                  Send
+                </button>
+              </form>
+              <div
+                id="activity-resize"
+                class="activity-resize"
+                role="button"
+                tabindex="0"
+                aria-label="Resize activity panel with arrow keys"
+              ></div>
+            </aside>
+            <div id="shuffle" class="shuffle hidden" aria-hidden="true">
+              <i>&#9824;</i><i>&#9824;</i><i>&#9824;</i>
+            </div>
+            <div class="view-status">
+              <div id="dealer-label"></div>
+              <div id="look-hint" role="status" class="hidden">
+                Click a player to look at them
+              </div>
+            </div>
+            <div class="control-row call-controls" aria-label="Table calls">
+              <button id="blunder-button" disabled>Blunder</button>
+              <button id="last-card-button" disabled>Last Card</button>
+            </div>
+          </div>
+          <div
+            id="action-announcement"
+            class="action-announcement hidden"
+            role="status"
+            aria-live="polite"
+          >
+            <strong id="announcement-title"></strong>
+            <span id="announcement-detail"></span>
+          </div>
+          <div id="hand-panel" class="hand-panel hidden">
+            <div class="hand-tray">
+              <div class="tray-heading">
+                <h3>Your hand <span id="hand-count"></span></h3>
+                <div class="hand-sort">
+                  <span>Sort by:</span>
+                  <button id="sort-value" class="quiet-button" type="button">
+                    Card Value
+                  </button>
+                  <button id="sort-suit" class="quiet-button" type="button">
+                    Suit
+                  </button>
+                </div>
+                <button id="hide-hand" class="quiet-button">Hide hand</button>
+              </div>
+              <div id="hand" class="hand" aria-label="Your cards"></div>
+            </div>
+            <div class="play-controls">
+              <div class="tray-heading">
+                <h3>Your play</h3>
+                <button id="clear-selection" class="quiet-button">Clear</button>
+              </div>
+              <div
+                id="selection"
+                class="selection"
+                aria-label="Cards to play"
+              ></div>
+            </div>
+          </div>
+          <div
+            id="action-bar"
+            class="control-row hidden"
+            aria-label="Available actions"
+          >
+            <button id="draw-button">Draw</button>
+            <button id="submit-button" class="primary">Submit</button>
+          </div>
+        </section>
+      </main>
+      <div id="modal" class="modal hidden">
+        <div class="modal-backdrop" data-close></div>
+        <div
+          class="modal-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dialog-title"
+        >
+          <button class="modal-close" data-close aria-label="Close">
+            &#215;
+          </button>
+          <div id="modal-content"></div>
+        </div>
+      </div>
+      <div id="toast" class="toast hidden" role="status"></div>
+    </div>
+    <div
+      id="music-player"
+      class="music-player hidden"
+      role="group"
+      aria-label="Soundtrack controls"
+    >
+      <div id="music-sync-status" class="music-sync-status" role="status" aria-live="polite">
+        <strong>MuzakBot:</strong> Music synced to server
+      </div>
+      <div class="music-transport">
+        <button id="music-previous" type="button" aria-label="Previous track">
+          <span aria-hidden="true">&#9198;</span>
+        </button>
+        <button id="music-play" type="button" aria-label="Play music" aria-pressed="false">
+          <span class="music-play-icon" aria-hidden="true">&#9654;</span>
+          <span class="music-pause-icon" aria-hidden="true">&#10074;&#10074;</span>
+        </button>
+        <button id="music-next" type="button" aria-label="Next track">
+          <span aria-hidden="true">&#9197;</span>
+        </button>
+      </div>
+      <div id="music-title-clip" class="music-title-clip">
+        <span id="music-title">Soundtrack</span>
+      </div>
+      <div class="music-volume-control">
+        <button id="music-mute" type="button" aria-label="Mute music" aria-pressed="false">
+          <span class="music-speaker-icon" aria-hidden="true">&#128266;</span>
+          <span class="music-muted-icon" aria-hidden="true">&#128263;</span>
+        </button>
+        <div class="music-volume-popover">
+          <input id="music-volume" type="range" min="0" max="1" step="0.01" value="0.35" aria-label="Soundtrack volume" />
+        </div>
+      </div>
+    </div>
+    <script src="version.js"></script>
+    <script src="music-playlist.js"></script>
+    <script src="music.js"></script>
+    <script src="game.js"></script>
+    <script type="module" src="table.js"></script>
+  </body>
+</html>

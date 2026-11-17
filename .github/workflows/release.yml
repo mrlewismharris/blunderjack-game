@@ -1,0 +1,140 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release tag (for example, v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x64
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos-x64
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            platform: macos-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version || github.ref }}
+      - name: Validate tag and package version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.version || github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          version=$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          test "$RELEASE_TAG" = "v$version"
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
+      - name: Install Rust target
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+      - name: Build binaries
+        run: cargo build --release --locked --bins --target ${{ matrix.target }}
+      - name: Verify server starts
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess, time, urllib.request
+          suffix = ".exe" if os.name == "nt" else ""
+          executable = pathlib.Path("target") / os.environ["BUILD_TARGET"] / "release" / ("blunderjack-server" + suffix)
+          process = subprocess.Popen([str(executable), "127.0.0.1:18901"], stdin=subprocess.PIPE)
+          try:
+              for _ in range(100):
+                  if process.poll() is not None:
+                      raise RuntimeError("Server exited before becoming ready")
+                  try:
+                      with urllib.request.urlopen("http://127.0.0.1:18901/health", timeout=1) as response:
+                          assert response.read() == b"ok"
+                      with urllib.request.urlopen("http://127.0.0.1:18901/", timeout=1) as response:
+                          assert b"<title>BlunderJack</title>" in response.read()
+                      break
+                  except OSError:
+                      time.sleep(0.1)
+              else:
+                  raise RuntimeError("Server did not become ready")
+          finally:
+              process.terminate()
+              process.wait(timeout=10)
+          PY
+      - name: Package Windows binaries
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = 'blunderjack-${{ matrix.platform }}'
+          New-Item -ItemType Directory -Path $dir | Out-Null
+          Copy-Item 'target/${{ matrix.target }}/release/blunderjack-client.exe', 'target/${{ matrix.target }}/release/blunderjack-server.exe', 'README.md', 'client/vendor/THREE-LICENSE.txt', 'client/cards/ARTWORK-LICENSE.txt' $dir
+          $loader = Get-ChildItem 'target/${{ matrix.target }}/release/build/webview2-com-sys-*/out/x64/WebView2Loader.dll'
+          if (@($loader).Count -ne 1) { throw 'Expected exactly one x64 WebView2 loader' }
+          Copy-Item $loader.FullName $dir
+          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
+      - name: Package Unix binaries
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="blunderjack-${{ matrix.platform }}"
+          mkdir "$dir"
+          cp "target/${{ matrix.target }}/release/blunderjack-client" "target/${{ matrix.target }}/release/blunderjack-server" README.md client/vendor/THREE-LICENSE.txt client/cards/ARTWORK-LICENSE.txt "$dir/"
+          tar -czf "$dir.tar.gz" "$dir"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blunderjack-${{ matrix.platform }}
+          path: blunderjack-${{ matrix.platform }}.*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.version || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          test "$(find artifacts -maxdepth 1 -type f | wc -l)" -eq 4
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > release-draft.txt 2>/dev/null; then
+            test "$(cat release-draft.txt)" = true || { echo 'Release already published' >&2; exit 1; }
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" artifacts/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false

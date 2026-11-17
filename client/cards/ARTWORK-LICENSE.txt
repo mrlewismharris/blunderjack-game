@@ -1,0 +1,3 @@
+The Jack, Queen, and King pictograms in this directory are original artwork
+created for this project. They were drawn procedurally and do not incorporate
+third-party card illustrations.
