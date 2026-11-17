@@ -1,6 +1,20 @@
 import * as THREE from "./vendor/three.module.js";
 
-const CARD_SUITS = { clubs: "♣", diamonds: "♦", hearts: "♥", spades: "♠" };
+const CARD_SUITS = {
+  clubs: new Path2D("M9 22h6l-1-6c5 3 11-3 6-7-2-2-4-1-4-1 3-9-11-9-8 0-7-3-11 6-5 9 2 1 4 0 7-1Z"),
+  diamonds: new Path2D("M12 1 22 12 12 23 2 12Z"),
+  hearts: new Path2D("M12 22 3 13C-5 4 7-3 12 5 17-3 29 4 21 13Z"),
+  spades: new Path2D("M9 23h6l-1-6c6 4 12-3 7-8L12 1 3 9c-5 5 1 12 7 8Z"),
+};
+
+function drawSuit(context, suit, x, y, size) {
+  if (!CARD_SUITS[suit]) return;
+  context.save();
+  context.translate(x, y);
+  context.scale(size / 24, size / 24);
+  context.fill(CARD_SUITS[suit]);
+  context.restore();
+}
 const FACE_RANKS = { 11: "J", 12: "Q", 13: "K" };
 
 function isRedSuit(suit) {
@@ -196,8 +210,7 @@ function drawCard(canvas, card) {
   context.fillStyle = isRedSuit(card.suit) ? "#ba263c" : "#17171a";
   context.textAlign = "left";
   context.textBaseline = "top";
-  context.font = "bold 58px Georgia";
-  context.fillText(CARD_SUITS[card.suit], 13, 11);
+  drawSuit(context, card.suit, 13, 14, 45);
   context.save();
   context.translate(width / 2, height * 0.56);
   context.rotate(-Math.PI / 45);
@@ -844,6 +857,9 @@ function createTable(container) {
 
   // Flight meshes and card textures are shared across transfers, including draws.
   const cardFlights = [];
+  let deal = null;
+  let dealTimer;
+  let firstPersonDetail = { cards: [], selected: [], hidden: false };
   const flightPool = [];
   const flightTextures = new Map();
   const { body: flightBody, faceGeometry: flightFace, paper: flightPaper } =
@@ -907,6 +923,15 @@ function createTable(container) {
         continue;
       }
       item.root.visible = true;
+      if (item.kind === "shuffle") {
+        const wave = Math.sin(t * Math.PI * 4 + item.phase);
+        item.root.position.copy(item.from);
+        item.root.position.x += wave * 0.32;
+        item.root.position.y += 0.04 + (1 + Math.cos(t * Math.PI * 4 + item.phase)) * 0.07;
+        item.root.rotation.set(Math.PI, item.yaw + wave * 0.16, 0);
+        item.root.scale.setScalar(1);
+        continue;
+      }
       const eased = t * t * (3 - 2 * t);
       item.root.position.lerpVectors(item.from, item.to, eased);
       item.root.position.y += Math.sin(Math.PI * t) * 0.38;
@@ -919,6 +944,7 @@ function createTable(container) {
   document.addEventListener("blunderjack:card-flight", ({ detail }) => {
     const { kind, seat, card } = detail || {};
     if (kind === "cancel") {
+      finishDeal();
       clearCardFlights();
       queueFrame();
       return;
@@ -951,6 +977,55 @@ function createTable(container) {
       cardFlights.push(item);
     }
     animateCardFlights(now);
+    queueFrame();
+  });
+  function updateDealHand(now) {
+    const count = deal ? deal.deliveries.filter((delivery) =>
+      delivery.seat === tableState.you && now >= delivery.arrival
+    ).length : firstPersonDetail.cards.length;
+    firstPersonHand.update({ ...firstPersonDetail, cards: firstPersonDetail.cards.slice(0, count) });
+  }
+  function finishDeal() {
+    if (!deal) return;
+    clearTimeout(dealTimer);
+    deal = null;
+    updateDealHand(performance.now());
+    document.dispatchEvent(new CustomEvent("blunderjack:deal-complete"));
+    queueFrame();
+  }
+  document.addEventListener("blunderjack:deal", ({ detail }) => {
+    clearTimeout(dealTimer);
+    deal = null;
+    const order = (detail?.seats || []).filter((seat) => Number.isInteger(seat) && avatars[seat]);
+    const counts = detail?.counts || [];
+    if (reducedMotion.matches || !order.length) {
+      document.dispatchEvent(new CustomEvent("blunderjack:deal-complete"));
+      return;
+    }
+    clearCardFlights();
+    const now = performance.now();
+    const pile = piles.flightPosition("draw");
+    const deliveries = [];
+    const maxCount = Math.max(0, ...order.map((seat) => Math.max(0, Math.floor(counts[seat] || 0))));
+    for (let card = 0; card < maxCount; card++) {
+      for (const seat of order) {
+        if (card < counts[seat]) deliveries.push({ seat, arrival: now + 700 + deliveries.length * 100 + 250 });
+      }
+    }
+    deal = { deliveries };
+    for (let i = 0; i < 4; i++) {
+      const item = acquireFlight(null);
+      Object.assign(item, { kind: "shuffle", start: now, duration: 700, from: pile.position, yaw: pile.yaw, phase: i * Math.PI / 2 });
+      cardFlights.push(item);
+    }
+    deliveries.forEach(({ seat, arrival }) => {
+      const item = acquireFlight(null);
+      Object.assign(item, { kind: "draw", start: arrival - 250, duration: 250, yaw: pile.yaw,
+        from: pile.position, to: avatars[seat].fan.getWorldPosition(new THREE.Vector3()) });
+      cardFlights.push(item);
+    });
+    updateDealHand(now);
+    dealTimer = setTimeout(finishDeal, 700 + Math.max(0, deliveries.length - 1) * 100 + 250);
     queueFrame();
   });
   const fpsCounter = document.getElementById("fps-counter");
@@ -1041,7 +1116,7 @@ function createTable(container) {
     avatar.fan.visible = count > 0;
     const spread = Math.min(1780, Math.max(0, (count - 1) * 88)),
       step = count > 1 ? spread / (count - 1) : 0;
-    const suits = ["♠", "♥", "♣", "♦"];
+    const suits = ["spades", "hearts", "clubs", "diamonds"];
     // Decorative faces depend only on the position, never on private cards.
     const reorder = avatar.reorder;
     if (reorder && (reorder.from >= count || reorder.to >= count))
@@ -1089,7 +1164,7 @@ function createTable(container) {
         -65,
         -48,
       );
-      c.fillText(suits[suit], -65, 3);
+      drawSuit(c, suits[suit], -65, -38, 42);
       c.restore();
     }
     for (let i = 0; i < count; i++) if (i !== moving?.from) paint(i);
@@ -1316,7 +1391,10 @@ function createTable(container) {
         }
       }
       paintFace(avatar, expression, blink, avatar.eyes.visible);
-      paintFan(avatar, active.includes(index) ? counts[index] : 0, now);
+      const dealt = deal ? deal.deliveries.filter((delivery) =>
+        delivery.seat === index && now >= delivery.arrival
+      ).length : counts[index];
+      paintFan(avatar, active.includes(index) ? dealt : 0, now);
       const gesture = gestures?.[index];
       const look = gesture?.look;
       const manual =
@@ -1527,6 +1605,7 @@ function createTable(container) {
       if (progress === 1) dealerTravel = null;
     }
     animateAvatars(now);
+    if (deal) updateDealHand(now);
     animateCardFlights(now);
     draw();
     if (showFps) {
@@ -1784,7 +1863,8 @@ function createTable(container) {
     queueFrame();
   });
   document.addEventListener("blunderjack:first-person-hand", ({ detail }) => {
-    firstPersonHand.update(detail);
+    firstPersonDetail = detail;
+    updateDealHand(performance.now());
   });
   document.addEventListener("blunderjack:gaze-snapshot", ({ detail }) => {
     sharedGaze = detail;
@@ -1809,6 +1889,7 @@ function createTable(container) {
     queueFrame();
   });
   document.addEventListener("blunderjack:reset-view", () => {
+    finishDeal();
     clearCardFlights();
     seats = Array(SEAT_COUNT).fill(null);
     pranks.fill(null);
@@ -1817,7 +1898,8 @@ function createTable(container) {
     });
     tableState = {};
     sharedGaze = [];
-    firstPersonHand.update({ cards: [], selected: [], hidden: false });
+    firstPersonDetail = { cards: [], selected: [], hidden: false };
+    firstPersonHand.update(firstPersonDetail);
     firstPersonButton.disabled = true;
     setFirstPerson(false);
     seatSignature = null;
@@ -2045,7 +2127,10 @@ function createTable(container) {
     else queueFrame();
   });
   reducedMotion.addEventListener("change", () => {
-    if (reducedMotion.matches) clearCardFlights();
+    if (reducedMotion.matches) {
+      finishDeal();
+      clearCardFlights();
+    }
     queueFrame();
   });
   container.classList.add("webgl-table");

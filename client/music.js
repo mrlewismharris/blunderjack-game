@@ -70,6 +70,7 @@ const music = (() => {
 
   function applyVolume() {
     const setting = Math.max(0, Math.min(1, Number(volume.value) || 0));
+    volume.style.setProperty("--volume-fill", `${setting * 100}%`);
     const level = userMuted ? 0 : 0.25 * setting ** 2 * fadeLevel;
     audio.muted = level === 0;
     if (gain) {

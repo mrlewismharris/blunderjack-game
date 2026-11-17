@@ -49,7 +49,9 @@ let socket,
   sending = false,
   state = null,
   token = "",
-  address = localStorage.getItem("bj-address") || "",
+  address = ["http:", "https:"].includes(location.protocol) && location.hostname !== "blackjack.localhost"
+    ? location.origin
+    : localStorage.getItem("bj-address") || "",
   selected = [],
   order = [],
   hidden = false,
@@ -60,6 +62,8 @@ let socket,
   presentationTimer,
   countdownTimer,
   revealing = false,
+  dealing = false,
+  dealTimer,
   displayedPot = null,
   displayedPotCount = 0,
   handSignature = "",
@@ -72,10 +76,20 @@ let socket,
 let blunderAudio;
 let announcementTimer;
 let cancelHandDrag;
-const suits = { clubs: "♣", diamonds: "♦", hearts: "♥", spades: "♠" };
+const suitPaths = {
+  clubs: "M9 22h6l-1-6c5 3 11-3 6-7-2-2-4-1-4-1 3-9-11-9-8 0-7-3-11 6-5 9 2 1 4 0 7-1Z",
+  diamonds: "M12 1 22 12 12 23 2 12Z",
+  hearts: "M12 22 3 13C-5 4 7-3 12 5 17-3 29 4 21 13Z",
+  spades: "M9 23h6l-1-6c6 4 12-3 7-8L12 1 3 9c-5 5 1 12 7 8Z",
+};
+const suits = Object.fromEntries(Object.entries(suitPaths).map(([name, path]) => [
+  name, `<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="${path}"/></svg>`,
+]));
+const grabIcon = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><circle cx="8" cy="5" r="2"/><circle cx="16" cy="5" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="8" cy="19" r="2"/><circle cx="16" cy="19" r="2"/></svg>';
+const arrowIcon = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path fill="none" d="M3 12h18m-6-6 6 6-6 6"/></svg>';
 const faceNames = { 1: "Ace", 11: "Jack", 12: "Queen", 13: "King" };
 const faceRanks = { 11: "J", 12: "Q", 13: "K" };
-const emotes = { finger: { icon: "🖕", name: "Middle finger" } };
+const emotes = { finger: { icon: '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="#fff9eb" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M8 22 5 16V9q0-3 3-1V7q0-3 3-1V3q0-4 3-2v10q3-3 4 0l-1 5-2 6Z"/></svg>', name: "Middle finger" } };
 const positions = [
   [50, 12],
   [70, 15],
@@ -163,7 +177,7 @@ function toast(message, error = false) {
 function profileModal() {
   let selectedColor = validSweaterColor(profile.sweaterColor);
   modal(
-    `<h2>Choose your character</h2><div class="profile-layout"><div class="avatar-preview" id="avatar-preview">${avatar(profile)}</div><div><label class="form-label" for="profile-name">DISPLAY NAME</label><input class="field" id="profile-name" maxlength="20" value="${escapeHtml(profile.name)}"><div class="form-label" id="sweater-color-label">SWEATER COLOUR</div><div class="sweater-swatches" role="group" aria-labelledby="sweater-color-label">${sweaterColors.map((color) => `<button type="button" class="sweater-swatch" style="--sweater-color: ${color.color}" data-color="${color.color}" aria-label="${color.name} sweater" aria-pressed="${color.color === selectedColor}"></button>`).join("")}</div></div></div><button class="primary" id="save-profile">SAVE CHARACTER <span>→</span></button>`,
+    `<h2>Choose your character</h2><div class="profile-layout"><div class="avatar-preview" id="avatar-preview">${avatar(profile)}</div><div><label class="form-label" for="profile-name">DISPLAY NAME</label><input class="field" id="profile-name" maxlength="20" value="${escapeHtml(profile.name)}"><div class="form-label" id="sweater-color-label">SWEATER COLOUR</div><div class="sweater-swatches" role="group" aria-labelledby="sweater-color-label">${sweaterColors.map((color) => `<button type="button" class="sweater-swatch" style="--sweater-color: ${color.color}" data-color="${color.color}" aria-label="${color.name} sweater" aria-pressed="${color.color === selectedColor}"></button>`).join("")}</div></div></div><button class="primary" id="save-profile">SAVE CHARACTER ${arrowIcon}</button>`,
   );
   const read = () => ({
     name: $("profile-name").value.trim().slice(0, 20),
@@ -204,7 +218,7 @@ function profileModal() {
 }
 function connectModal() {
   modal(
-    `<h2>Connect to a server</h2><p>Enter the host’s IP address or server address to join friends at their table.</p><label class="form-label" for="server-address">SERVER ADDRESS</label><input class="field" id="server-address" placeholder="e.g. 192.168.1.10:8765" value="${escapeHtml(address)}"><button class="primary" id="connect-button">CONNECT TO TABLE <span>→</span></button>`,
+    `<h2>Connect to a server</h2><p>Enter the host’s IP address or server address to join friends at their table.</p><label class="form-label" for="server-address">SERVER ADDRESS</label><input class="field" id="server-address" placeholder="e.g. 192.168.1.10:8765" value="${escapeHtml(address)}"><button class="primary" id="connect-button">CONNECT TO TABLE ${arrowIcon}</button>`,
   );
   $("connect-button").onclick = () => {
     address = $("server-address").value.trim();
@@ -218,7 +232,10 @@ function connectModal() {
     connect();
   };
   $("server-address").onkeydown = (e) => {
-    if (e.key === "Enter") $("connect-button").click();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      $("connect-button").click();
+    }
   };
 }
 function wsUrl(input) {
@@ -351,7 +368,7 @@ function connect() {
     if (socket !== connection || passwordPrompt) return;
     passwordPrompt = true;
     modal(
-      `<h2>Server password</h2><p>${escapeHtml(message || "Enter the password for this table.")}</p><label class="form-label" for="server-password">PASSWORD</label><input class="field" id="server-password" type="password" autocomplete="current-password"><button class="primary" id="submit-password">JOIN TABLE <span>→</span></button>`,
+      `<h2>Server password</h2><p>${escapeHtml(message || "Enter the password for this table.")}</p><label class="form-label" for="server-password">PASSWORD</label><input class="field" id="server-password" type="password" autocomplete="current-password"><button class="primary" id="submit-password">JOIN TABLE ${arrowIcon}</button>`,
     );
     modalOnClose = () => {
       passwordPrompt = false;
@@ -408,6 +425,7 @@ function connect() {
       connected = true;
       setConnectionStatus("CONNECTED");
       $("welcome").classList.add("hidden");
+      $("table-controls").appendChild($("music-player"));
       $("table-screen").classList.remove("hidden");
       music?.connect(msg, (id) => {
         if (socket !== connection || connection.readyState !== WebSocket.OPEN)
@@ -436,10 +454,26 @@ function connect() {
       ) {
         playBlunderCall();
       }
+      const newDeal = previous && state.game.round !== previous.game.round &&
+        state.phase === "playing" && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (dealing && (state.game.round !== previous?.game.round || state.game.last)) {
+        clearTimeout(dealTimer);
+        dealing = false;
+        document.dispatchEvent(new CustomEvent("blunderjack:card-flight", { detail: { kind: "cancel" } }));
+      }
+      if (newDeal) dealing = true;
       syncHand();
       present(previous);
       recordActivity(previous);
       render();
+      if (newDeal) {
+        const seats = state.game.active.slice().sort((a, b) =>
+          ((a - state.game.dealer + 9) % 10) - ((b - state.game.dealer + 9) % 10));
+        const counts = state.game.counts;
+        const total = seats.reduce((sum, seat) => sum + counts[seat], 0);
+        dealTimer = setTimeout(finishDeal, 700 + Math.max(0, total - 1) * 100 + 250);
+        document.dispatchEvent(new CustomEvent("blunderjack:deal", { detail: { seats, counts } }));
+      }
       announceAction(previous);
       if (state.sharedGaze) {
         document.dispatchEvent(
@@ -586,7 +620,7 @@ function syncHand() {
 }
 
 function takeAction(message) {
-  if (!connected || sending) return;
+  if (!connected || sending || dealing) return;
   sending = true;
   send({ ...message, round: state.game.round });
   render();
@@ -623,13 +657,14 @@ function render() {
   $("last-card-button").disabled =
     !connected ||
     sending ||
+    dealing ||
     !state.lastCardRule ||
     !active ||
     Boolean(state.pendingBlunder);
   $("dealer-label").textContent =
     g.dealer == null
       ? ""
-      : `Dealer: ${seats[g.dealer]?.profile?.name || "Player"} · ${g.direction === -1 ? "↺ Counterclockwise" : "↻ Clockwise"}`;
+      : `Dealer: ${seats[g.dealer]?.profile?.name || "Player"} · ${g.direction === -1 ? "Counterclockwise" : "Clockwise"}`;
 
   renderSeats(seats, g, playing, cameraSeat);
   renderPiles(g);
@@ -638,12 +673,13 @@ function render() {
   const turn =
     connected &&
     !sending &&
+    !dealing &&
     state.phase === "playing" &&
     !revealing &&
     !state.pendingBlunder &&
     active &&
     g.current === state.you;
-  $("hand-panel").classList.toggle("hidden", !active);
+  $("hand-panel").classList.toggle("hidden", !active || dealing);
   $("hand-count").textContent = state.hand.length
     ? `${state.hand.length} cards`
     : "";
@@ -651,14 +687,14 @@ function render() {
   $("hide-hand").disabled = !state.hand.length;
   const canSubmit = turn && selected.length > 0;
   const canBlunder =
-    connected && !sending && state.canBlunder && !state.pendingBlunder;
+    connected && !sending && !dealing && state.canBlunder && !state.pendingBlunder;
   $("action-bar").classList.toggle("hidden", !turn);
-  $("submit-button").classList.toggle("hidden", !canSubmit);
+  $("submit-button").disabled = !canSubmit;
   $("draw-button").classList.toggle("hidden", !turn);
   $("blunder-button").disabled = !canBlunder;
   $("draw-button").textContent = g.penalty
-    ? `Draw ${g.penalty.amount}`
-    : "Draw";
+    ? `Draw ${g.penalty.amount} Cards`
+    : "Draw 1 Card";
   $("clear-selection").classList.toggle("hidden", !selected.length);
   renderHand();
   renderNotice(active);
@@ -714,7 +750,7 @@ function renderSeats(seats, game, playing, cameraSeat) {
       if (!seat) {
         return canSit && !(playing && game.placements?.includes(index))
           ? `<div class="seat" ${placement}>
-        <button type="button" class="seat-button" data-seat="${index}" aria-label="Take seat ${index + 1}" title="Take seat ${index + 1}">+</button>
+        <button type="button" class="seat-button" data-seat="${index}" aria-label="Take seat ${index + 1}" title="Take seat ${index + 1}"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4h2v7h7v2h-7v7h-2v-7H4v-2h7Z"/></svg></button>
       </div>`
           : "";
       }
@@ -822,6 +858,7 @@ function renderHand() {
   handSignature = signature;
   const focusedCard = document.activeElement?.closest(".card-wrap");
   const focusId = focusedCard?.dataset.id;
+  const focusTray = focusedCard?.parentElement.id;
   const focusHandle = document.activeElement?.classList.contains("card-grab");
   let map = new Map(cards.map((c) => [c.id, c]));
   document.dispatchEvent(
@@ -835,33 +872,25 @@ function renderHand() {
           let c = map.get(id);
           const staged = selected.includes(id) ? "selected" : "";
           const face = hidden
-            ? `<button class="playing-card card-hidden ${staged}" aria-label="Select hidden card ${i + 1}">♠</button>`
+            ? `<button class="playing-card card-hidden ${staged}" aria-label="Select hidden card ${i + 1}">${suits.spades}</button>`
             : cardHTML(c, staged, { handIndex: true });
-          return `<div class="card-wrap" data-id="${id}">${face}<button type="button" class="card-grab" aria-label="Move card ${i + 1}; use left and right arrow keys" title="Drag to reorder; use arrow keys to move">⋮⋮</button></div>`;
+          return `<div class="card-wrap" data-id="${id}">${face}<button type="button" class="card-grab" aria-label="Move card ${i + 1}; use left and right arrow keys" title="Drag to reorder; use arrow keys to move">${grabIcon}</button></div>`;
         })
         .join("")
     : '<div class="empty-hand">No cards left</div>';
-  sizeHand();
   $("selection").innerHTML = selected.length
     ? selected
         .map((id) => {
           let c = map.get(id);
-          const face = hidden ? "♠" : cardMarks(c);
           const label = hidden ? "hidden card" : escapeHtml(cardLabel(c));
-          return `<button type="button" data-unstage="${id}" class="playing-card staged-card ${hidden ? "card-hidden" : isRedSuit(c.suit) ? "red" : ""}" aria-label="Return ${label} to hand" title="Return ${label} to hand">${face}</button>`;
+          const face = hidden
+            ? `<button type="button" class="playing-card card-hidden" aria-label="Return ${label} to hand">${suits.spades}</button>`
+            : cardHTML(c, "staged-card", { handIndex: true });
+          return `<div class="card-wrap" data-id="${id}">${face}<button type="button" class="card-grab" aria-label="Move played card; use left and right arrow keys" title="Drag to reorder; use arrow keys to move">${grabIcon}</button></div>`;
         })
         .join("")
     : "<span>Select cards in play order</span>";
-  $("selection")
-    .querySelectorAll("[data-unstage]")
-    .forEach((button) => {
-      button.onclick = () => {
-        selected = selected.filter(
-          (id) => id !== Number(button.dataset.unstage),
-        );
-        render();
-      };
-    });
+  sizeHand();
   document.querySelectorAll(".card-wrap").forEach((el) => {
     let id = Number(el.dataset.id);
     el.querySelector(".playing-card").onclick = () => {
@@ -870,16 +899,18 @@ function renderHand() {
         : [...selected, id];
       render();
     };
+    const tray = el.parentElement;
     const handle = el.querySelector(".card-grab");
     handle.onkeydown = (event) => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       event.preventDefault();
-      const from = order.indexOf(id);
+      const list = tray.id === "selection" ? selected : order;
+      const from = list.indexOf(id);
       const to = from + (event.key === "ArrowLeft" ? -1 : 1);
-      if (to < 0 || to >= order.length) return;
-      [order[from], order[to]] = [order[to], order[from]];
+      if (to < 0 || to >= list.length) return;
+      [list[from], list[to]] = [list[to], list[from]];
       renderHand();
-      $("hand")
+      tray
         .querySelector(`[data-id="${id}"]`)
         ?.scrollIntoView({ block: "nearest", inline: "nearest" });
       document.dispatchEvent(new Event("blunderjack:hand-reordered"));
@@ -887,7 +918,7 @@ function renderHand() {
     handle.onpointerdown = (event) => startHandDrag(event, el, id);
   });
   if (focusId) {
-    const card = $("hand").querySelector(`[data-id="${focusId}"]`);
+    const card = $(focusTray).querySelector(`[data-id="${focusId}"]`);
     card
       ?.querySelector(focusHandle ? ".card-grab" : ".playing-card")
       ?.focus({ preventScroll: true });
@@ -900,23 +931,27 @@ function sizeHand() {
   const width = count
     ? Math.max(44, Math.min(58, (available - 6 * (count - 1)) / count))
     : 58;
-  const step =
-    count > 1
+  [hand, $("selection")].forEach((tray) => {
+    const count = tray.querySelectorAll(".card-wrap").length;
+    const available = Math.max(0, tray.clientWidth - 6);
+    const step = count > 1
       ? Math.min(width + 6, Math.max(18, (available - width) / (count - 1)))
       : width;
-  const wraps = width + step * (count - 1) > available + 0.01;
-  hand.style.setProperty("--hand-card-width", `${width}px`);
-  hand.style.setProperty("--hand-card-step", `${step}px`);
-  hand.classList.toggle("overlapping", count > 1 && step < width);
-  hand.classList.toggle("wrapping", wraps);
+    const wraps = width + step * (count - 1) > available + 0.01;
+    tray.style.setProperty("--hand-card-width", `${width}px`);
+    tray.style.setProperty("--hand-card-step", `${step}px`);
+    tray.classList.toggle("overlapping", count > 1 && step < width);
+    tray.classList.toggle("wrapping", wraps);
+  });
 }
-new ResizeObserver(sizeHand).observe($("hand"));
+new ResizeObserver(sizeHand).observe($("hand-panel"));
 
 // Move the placeholder through the hand while a floating card follows the pointer.
 function startHandDrag(event, card, id) {
   if (event.button !== 0 || dragging) return;
   event.preventDefault();
-  const hand = $("hand");
+  const hand = card.parentElement;
+  const list = hand.id === "selection" ? selected : order;
   const rect = card.getBoundingClientRect();
   const ghost = card.cloneNode(true);
   ghost.setAttribute("aria-hidden", "true");
@@ -986,14 +1021,17 @@ function startHandDrag(event, card, id) {
     );
     const changed =
       e.type === "pointerup" &&
-      next.length === order.length &&
-      next.every((value) => order.includes(value)) &&
-      next.some((value, index) => value !== order[index]);
-    if (changed) order = next;
+      next.length === list.length &&
+      next.every((value) => list.includes(value)) &&
+      next.some((value, index) => value !== list[index]);
+    if (changed) {
+      if (hand.id === "selection") selected = next;
+      else order = next;
+    }
     dragging = false;
     handSignature = "";
     renderHand();
-    $("hand")
+    hand
       .querySelector(`[data-id="${id}"] .card-grab`)
       ?.focus({ preventScroll: true });
     if (changed) document.dispatchEvent(new Event("blunderjack:hand-reordered"));
@@ -1013,7 +1051,7 @@ function renderNotice(active) {
   const nameAt = (seat) => state.seats[seat]?.profile?.name || "Player";
   const winner = game.winner == null ? null : nameAt(game.winner);
   const countingDown = state.phase === "countdown";
-  $("shuffle").classList.toggle("hidden", !countingDown);
+  $("shuffle").classList.toggle("hidden", !countingDown && !(dealing && !document.querySelector(".webgl-table")));
   clearInterval(countdownTimer);
 
   if (state.phase === "paused") {
@@ -1051,6 +1089,9 @@ function renderNotice(active) {
   if (state.phase === "finishing") {
     heading.textContent = `${nameAt(game.candidate)} played their last card`;
     subtitle.textContent = state.canBlunder ? "Blunder is open" : "";
+  } else if (dealing) {
+    heading.textContent = "Shuffling and dealing";
+    subtitle.textContent = "Seven cards each · Clockwise";
   } else if (state.phase === "playing") {
     const current = game.current;
     const text =
@@ -1116,6 +1157,14 @@ function present(previous) {
   }
   step();
 }
+
+function finishDeal() {
+  if (!dealing) return;
+  clearTimeout(dealTimer);
+  dealing = false;
+  render();
+}
+document.addEventListener("blunderjack:deal-complete", finishDeal);
 
 function flyCard(detail) {
   document.dispatchEvent(new CustomEvent("blunderjack:card-flight", { detail }));
@@ -1225,7 +1274,7 @@ function announceAction(previous) {
   if (previous?.pendingBlunder) hideAnnouncement();
   if (!previous || game.round !== previous.game.round) {
     if (game.round)
-      showAnnouncement(`Round ${game.round}`, "Seven cards dealt", 1300);
+      showAnnouncement(`Round ${game.round}`, dealing ? "Shuffling and dealing" : "Seven cards dealt", 1300);
     return;
   }
   if (game.winner != null && game.winner !== previous.game.winner) {
@@ -1303,7 +1352,7 @@ function rulesModal() {
 
     <h3>Your turn</h3>
     <p>Match the top card of the POT by rank or suit. To chain cards, match the previous rank or go one rank up or down in the same suit. A, J, Q and K count as 1, 11, 12 and 13.</p>
-    <p>Select cards in play order and click <strong>Submit</strong>, or <strong>Draw</strong> 1 card (or the penalty amount) to end your turn. If the PICKUP runs out, recycle the POT in order, keeping its top card.</p>
+    <p>Select cards in play order and click <strong>Play Hand</strong> (or press <strong>Space</strong>), or <strong>Draw 1 Card</strong> (or the penalty amount) to end your turn. If the PICKUP runs out, recycle the POT in order, keeping its top card.</p>
 
     <h3>Special cards</h3>
     <p>Draw penalties, skips and reversals only trigger at the end of a play.</p>
@@ -1364,7 +1413,7 @@ $("menu-button").onclick = () =>
     </div>`,
   );
 document.addEventListener("click", (e) => {
-  if (e.target.matches("[data-close]")) closeModal();
+  if (e.target.closest("[data-close]")) closeModal();
   if (e.target.id === "menu-profile") profileModal();
   if (e.target.id === "menu-options") $("options-button").click();
   if (e.target.id === "menu-rules") rulesModal();
@@ -1385,6 +1434,14 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.repeat) return;
+  if (e.code === "Space" && !e.ctrlKey && !e.altKey && !e.metaKey &&
+      $("modal").classList.contains("hidden") &&
+      !$("action-bar").classList.contains("hidden") &&
+      !e.target.closest('button:not(.playing-card):not(.card-grab), input, textarea, select, [contenteditable]:not([contenteditable="false"])')) {
+    e.preventDefault();
+    $("submit-button").click();
+    return;
+  }
   if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.code === "KeyE") {
     if (
       !connected ||
@@ -1429,6 +1486,8 @@ function resetTable() {
   hideAnnouncement();
   clearTimeout(presentationTimer);
   clearInterval(countdownTimer);
+  clearTimeout(dealTimer);
+  dealing = false;
   presentationTimer = null;
   revealing = false;
   lastShown = null;
@@ -1464,6 +1523,7 @@ function leaveTable() {
   resetTable();
   socket?.close();
   music?.disconnect();
+  document.body.appendChild($("music-player"));
   $("table-screen").classList.add("hidden");
   $("welcome").classList.remove("hidden");
   setConnectionStatus("OFFLINE");
@@ -1483,6 +1543,7 @@ function placeControls(left, top) {
   controls.style.left = `${Math.max(0, Math.min(left, maxLeft))}px`;
   controls.style.top = `${Math.max(0, Math.min(top, maxTop))}px`;
   controls.style.right = "auto";
+  localStorage.setItem("bj-controls-position", JSON.stringify({ left: parseFloat(controls.style.left), top: parseFloat(controls.style.top) }));
 }
 controlsHandle.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
@@ -1503,8 +1564,18 @@ controlsHandle.addEventListener("pointerdown", (event) => {
   controlsHandle.addEventListener("lostpointercapture", finish);
   event.preventDefault();
 });
+let controlsRestored = false;
 function clampControls() {
-  if (controls.style.left && controls.offsetWidth)
+  if (!controls.offsetWidth || !controls.offsetHeight) return;
+  if (!controlsRestored) {
+    controlsRestored = true;
+    try {
+      const saved = JSON.parse(localStorage.getItem("bj-controls-position"));
+      if (Number.isFinite(saved?.left) && Number.isFinite(saved?.top))
+        placeControls(saved.left, saved.top);
+    } catch {}
+  }
+  if (controls.style.left)
     placeControls(
       parseFloat(controls.style.left),
       parseFloat(controls.style.top),
@@ -1553,6 +1624,9 @@ function placeActivity(left, top, width, height) {
   activityPanel.style.left = `${Math.max(0, Math.min(left, vw - width))}px`;
   activityPanel.style.top = `${Math.max(0, Math.min(top, vh - height))}px`;
   activityPanel.style.right = "auto";
+  localStorage.setItem("bj-activity-position", JSON.stringify({
+    left: parseFloat(activityPanel.style.left), top: parseFloat(activityPanel.style.top), width, height,
+  }));
 }
 function activityPointer(handle, resize) {
   handle.addEventListener("pointerdown", (event) => {
@@ -1599,11 +1673,29 @@ function activityPointer(handle, resize) {
 }
 activityPointer(activityHandle, false);
 activityPointer(activityResize, true);
-window.addEventListener("resize", () => {
-  if (!activityPanel.offsetWidth) return;
-  const r = activityPanel.getBoundingClientRect();
-  placeActivity(r.left, r.top, r.width, r.height);
-});
+let activityRestored = false;
+function clampActivity() {
+  if (!activityPanel.offsetWidth || !activityPanel.offsetHeight) return;
+  const scene = document.querySelector(".table-scene").getBoundingClientRect();
+  activityPanel.style.maxHeight = `${Math.max(120, scene.bottom - activityPanel.getBoundingClientRect().top - 12)}px`;
+  if (!activityRestored) {
+    activityRestored = true;
+    try {
+      const saved = JSON.parse(localStorage.getItem("bj-activity-position"));
+      if ([saved?.left, saved?.top, saved?.width, saved?.height].every(Number.isFinite)) {
+        placeActivity(saved.left, saved.top, saved.width, saved.height);
+        return;
+      }
+    } catch {}
+  }
+  if (activityPanel.style.left) {
+    const r = activityPanel.getBoundingClientRect();
+    placeActivity(r.left, r.top, r.width, r.height);
+  }
+}
+window.addEventListener("resize", clampActivity);
+new ResizeObserver(clampActivity).observe(activityPanel);
+new ResizeObserver(clampActivity).observe(document.querySelector(".table-scene"));
 
 $("seats").onclick = (event) => {
   const button = event.target.closest("[data-seat]");
@@ -1677,7 +1769,7 @@ $("clear-selection").onclick = () => {
   render();
 };
 $("submit-button").onclick = () => {
-  if (selected.length) takeAction({ type: "play", cards: selected });
+  if (!$("submit-button").disabled && selected.length) takeAction({ type: "play", cards: selected });
 };
 $("draw-button").onclick = () => takeAction({ type: "draw" });
 $("last-card-button").onclick = () => takeAction({ type: "last_card" });

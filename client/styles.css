@@ -50,8 +50,8 @@ button:disabled {
 }
 .music-player {
   position: fixed;
-  top: 20px;
-  right: clamp(16px, 2.6vw, 42px);
+  top: 13px;
+  right: 13px;
   z-index: 30;
   isolation: isolate;
   display: flex;
@@ -131,11 +131,18 @@ button:disabled {
     100% { visibility: hidden; }
   }
 }
-.music-play-icon,
-.music-pause-icon,
-.music-speaker-icon,
-.music-muted-icon {
-  font-family: "Segoe UI Symbol", sans-serif;
+.ui-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  vertical-align: middle;
+  fill: currentColor;
+}
+.grip-icon {
+  display: block;
+  width: 12px;
+  height: 16px;
+  fill: currentColor;
 }
 .music-pause-icon,
 .music-muted-icon,
@@ -145,7 +152,7 @@ button:disabled {
 }
 #music-play[aria-pressed="true"] .music-pause-icon,
 #music-mute[aria-pressed="true"] .music-muted-icon {
-  display: inline;
+  display: block;
 }
 .music-title-clip {
   flex: 1;
@@ -178,8 +185,43 @@ button:disabled {
 }
 #music-volume {
   width: 100%;
-  accent-color: #ddd;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 18px;
+  margin: 0;
+  background: transparent;
   cursor: pointer;
+}
+#music-volume::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 4px;
+  background: linear-gradient(to right, #eee var(--volume-fill, 35%), #555 var(--volume-fill, 35%));
+}
+#music-volume::-moz-range-track {
+  height: 4px;
+  border-radius: 4px;
+  background: #555;
+}
+#music-volume::-moz-range-progress {
+  height: 4px;
+  border-radius: 4px;
+  background: #eee;
+}
+#music-volume::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border: 0;
+  border-radius: 50%;
+  background: #fff;
+}
+#music-volume::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 50%;
+  background: #fff;
 }
 .music-player.music-synced {
   width: min(206px, calc(100vw - 32px));
@@ -456,8 +498,8 @@ body:has(.intro-running) {
 }
 .table-controls {
   position: fixed;
-  top: 20px;
-  right: clamp(16px, 2.6vw, 42px);
+  top: 13px;
+  right: 13px;
   z-index: 5;
   display: flex;
   align-items: center;
@@ -465,6 +507,18 @@ body:has(.intro-running) {
   gap: 7px;
   max-width: 100%;
   padding: 6px;
+}
+.table-controls .music-player {
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  width: 234px;
+  height: 34px;
+  border-color: #444;
+  background: #171717;
+}
+.table-controls .music-player.music-synced {
+  width: 206px;
 }
 .controls-handle {
   padding: 5px;
@@ -745,22 +799,16 @@ body:has(.intro-running) {
 }
 .activity-panel {
   position: fixed;
-  right: clamp(16px, 2.6vw, 42px);
-  top: 100px;
+  right: 13px;
+  top: 13vh;
   z-index: 6;
   display: flex;
   flex-direction: column;
-  width: min(280px, 90vw);
-  height: min(210px, 50vh);
+  width: min(clamp(240px, 33vw, 560px), 90vw);
+  height: 78vh;
   min-width: 0;
   background: #111b;
   overflow: hidden;
-}
-body:has(.music-player:not(.hidden)) .table-controls {
-  top: 88px;
-}
-body:has(.music-player:not(.hidden)) .activity-panel {
-  top: 152px;
 }
 .activity-handle {
   display: flex;
@@ -1072,24 +1120,8 @@ body:has(.music-player:not(.hidden)) .activity-panel {
   color: var(--muted);
 }
 .selection {
-  display: flex;
-  align-items: center;
-  min-height: 48px;
-  gap: 5px;
-  margin: 1px 0 6px;
-  overflow-x: auto;
-  scrollbar-width: thin;
   color: var(--muted);
   font-size: 12px;
-}
-.staged-card {
-  --rank-size: 19px;
-  --suit-size: 15px;
-  --suit-inset: 2px;
-  width: 32px;
-  height: 38px;
-  border-width: 1px;
-  border-radius: 5px;
 }
 .control-row {
   display: flex;
@@ -1098,6 +1130,16 @@ body:has(.music-player:not(.hidden)) .activity-panel {
   gap: 12px;
   padding: 4px 16px 13px;
   background: #090909;
+}
+#action-bar {
+  position: absolute;
+  z-index: 4;
+  bottom: 78px;
+  left: 50%;
+  transform: translateX(-50%);
+  flex-wrap: nowrap;
+  padding: 0 0 4px;
+  background: none;
 }
 .call-controls {
   position: absolute;
@@ -1220,6 +1262,8 @@ body:has(.music-player:not(.hidden)) .activity-panel {
   background: #0b0b0b;
 }
 .modal-close {
+  display: grid;
+  place-items: center;
   position: absolute;
   top: 11px;
   right: 12px;
@@ -1453,6 +1497,10 @@ body:has(.music-player:not(.hidden)) .activity-panel {
   touch-action: none;
   line-height: 1;
 }
+.hand .card-grab .ui-icon {
+  display: block;
+  margin: auto;
+}
 .hand .card-grab:hover,
 .hand .card-grab:focus-visible {
   color: #fff;
@@ -1476,4 +1524,12 @@ body:has(.music-player:not(.hidden)) .activity-panel {
 }
 .hand-drag-ghost .card-grab {
   display: none;
+}
+
+.card-suit svg,
+.hand-card-index svg {
+  width: 1em;
+  height: 1em;
+  vertical-align: middle;
+  fill: currentColor;
 }

@@ -65,7 +65,7 @@
               title="Drag to move controls"
               aria-hidden="true"
             >
-              ⠿
+              <svg class="grip-icon" viewBox="0 0 12 16" aria-hidden="true"><circle cx="3" cy="3" r="1.3"/><circle cx="9" cy="3" r="1.3"/><circle cx="3" cy="8" r="1.3"/><circle cx="9" cy="8" r="1.3"/><circle cx="3" cy="13" r="1.3"/><circle cx="9" cy="13" r="1.3"/></svg>
             </div>
             <div class="camera-controls">
               <button id="camera-overview" class="quiet-button">
@@ -121,7 +121,7 @@
               </div>
               <div class="pile">
                 <span class="card-back mini-card" aria-hidden="true"
-                  >&#9824;</span
+                  ><svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true"><path d="M12 2C9 6 3 9 3 14a5 5 0 008 3c0 2-1 3-3 4h8c-2-1-3-2-3-4a5 5 0 008-3c0-5-6-8-9-12z"/></svg></span
                 >
                 <div>Pickup <strong id="pickup-count">&#8212;</strong></div>
               </div>
@@ -147,7 +147,7 @@
                 aria-label="Move activity panel with arrow keys"
               >
                 <strong>Activity and Chat</strong
-                ><span aria-hidden="true">&#8942;&#8942;</span>
+                ><svg class="grip-icon" viewBox="0 0 12 16" aria-hidden="true"><circle cx="3" cy="3" r="1.3"/><circle cx="9" cy="3" r="1.3"/><circle cx="3" cy="8" r="1.3"/><circle cx="9" cy="8" r="1.3"/><circle cx="3" cy="13" r="1.3"/><circle cx="9" cy="13" r="1.3"/></svg>
               </div>
               <div
                 id="activity-log"
@@ -180,13 +180,21 @@
               ></div>
             </aside>
             <div id="shuffle" class="shuffle hidden" aria-hidden="true">
-              <i>&#9824;</i><i>&#9824;</i><i>&#9824;</i>
+              <i><svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true"><path d="M12 2C9 6 3 9 3 14a5 5 0 008 3c0 2-1 3-3 4h8c-2-1-3-2-3-4a5 5 0 008-3c0-5-6-8-9-12z"/></svg></i><i><svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true"><path d="M12 2C9 6 3 9 3 14a5 5 0 008 3c0 2-1 3-3 4h8c-2-1-3-2-3-4a5 5 0 008-3c0-5-6-8-9-12z"/></svg></i><i><svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true"><path d="M12 2C9 6 3 9 3 14a5 5 0 008 3c0 2-1 3-3 4h8c-2-1-3-2-3-4a5 5 0 008-3c0-5-6-8-9-12z"/></svg></i>
             </div>
             <div class="view-status">
               <div id="dealer-label"></div>
               <div id="look-hint" role="status" class="hidden">
                 Click a player to look at them
               </div>
+            </div>
+            <div
+              id="action-bar"
+              class="control-row hidden"
+              aria-label="Available actions"
+            >
+              <button id="draw-button">Draw 1 Card</button>
+              <button id="submit-button" class="primary">Play Hand (Space)</button>
             </div>
             <div class="control-row call-controls" aria-label="Table calls">
               <button id="blunder-button" disabled>Blunder</button>
@@ -226,18 +234,10 @@
               </div>
               <div
                 id="selection"
-                class="selection"
+                class="selection hand"
                 aria-label="Cards to play"
               ></div>
             </div>
-          </div>
-          <div
-            id="action-bar"
-            class="control-row hidden"
-            aria-label="Available actions"
-          >
-            <button id="draw-button">Draw</button>
-            <button id="submit-button" class="primary">Submit</button>
           </div>
         </section>
       </main>
@@ -250,7 +250,7 @@
           aria-labelledby="dialog-title"
         >
           <button class="modal-close" data-close aria-label="Close">
-            &#215;
+            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l14 14M19 5L5 19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           </button>
           <div id="modal-content"></div>
         </div>
@@ -268,14 +268,14 @@
       </div>
       <div class="music-transport">
         <button id="music-previous" type="button" aria-label="Previous track">
-          <span aria-hidden="true">&#9198;</span>
+          <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h2v14H5zm14 0v14L8 12z"/></svg>
         </button>
         <button id="music-play" type="button" aria-label="Play music" aria-pressed="false">
-          <span class="music-play-icon" aria-hidden="true">&#9654;</span>
-          <span class="music-pause-icon" aria-hidden="true">&#10074;&#10074;</span>
+          <svg class="ui-icon music-play-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l13 8-13 8z"/></svg>
+          <svg class="ui-icon music-pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
         </button>
         <button id="music-next" type="button" aria-label="Next track">
-          <span aria-hidden="true">&#9197;</span>
+          <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 5h2v14h-2zM5 5l11 7-11 7z"/></svg>
         </button>
       </div>
       <div id="music-title-clip" class="music-title-clip">
@@ -283,8 +283,8 @@
       </div>
       <div class="music-volume-control">
         <button id="music-mute" type="button" aria-label="Mute music" aria-pressed="false">
-          <span class="music-speaker-icon" aria-hidden="true">&#128266;</span>
-          <span class="music-muted-icon" aria-hidden="true">&#128263;</span>
+          <svg class="ui-icon music-speaker-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9z"/><path d="M15 8a6 6 0 010 8m2-11a10 10 0 010 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <svg class="ui-icon music-muted-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9z"/><path d="M16 9l5 6m0-6l-5 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         </button>
         <div class="music-volume-popover">
           <input id="music-volume" type="range" min="0" max="1" step="0.01" value="0.35" aria-label="Soundtrack volume" />
