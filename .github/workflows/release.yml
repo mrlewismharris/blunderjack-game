@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Existing release tag (for example, v0.1.0)
+        description: Existing release tag (for example, v0.1.1)
         required: true
         type: string
 
@@ -92,6 +92,10 @@ jobs:
           $dir = 'blunderjack-${{ matrix.platform }}'
           New-Item -ItemType Directory -Path $dir | Out-Null
           Copy-Item 'target/${{ matrix.target }}/release/blunderjack-client.exe', 'target/${{ matrix.target }}/release/blunderjack-server.exe', 'README.md', 'client/vendor/THREE-LICENSE.txt', 'client/cards/ARTWORK-LICENSE.txt' $dir
+          Copy-Item 'docs' -Destination $dir -Recurse
+          New-Item -ItemType Directory -Path "$dir/client/vendor", "$dir/client/cards" -Force | Out-Null
+          Copy-Item 'client/vendor/THREE-LICENSE.txt' "$dir/client/vendor/"
+          Copy-Item 'client/cards/ARTWORK-LICENSE.txt' "$dir/client/cards/"
           $metadata = cargo metadata --locked --format-version 1 --filter-platform '${{ matrix.target }}' | ConvertFrom-Json
           $webview = $metadata.packages | Where-Object name -EQ 'webview2-com-sys'
           $loader = Join-Path (Split-Path $webview.manifest_path) 'x64/WebView2Loader.dll'
@@ -105,6 +109,10 @@ jobs:
           dir="blunderjack-${{ matrix.platform }}"
           mkdir "$dir"
           cp "target/${{ matrix.target }}/release/blunderjack-client" "target/${{ matrix.target }}/release/blunderjack-server" README.md client/vendor/THREE-LICENSE.txt client/cards/ARTWORK-LICENSE.txt "$dir/"
+          cp -R docs "$dir/"
+          mkdir -p "$dir/client/vendor" "$dir/client/cards"
+          cp client/vendor/THREE-LICENSE.txt "$dir/client/vendor/"
+          cp client/cards/ARTWORK-LICENSE.txt "$dir/client/cards/"
           tar -czf "$dir.tar.gz" "$dir"
       - uses: actions/upload-artifact@v4
         with:
