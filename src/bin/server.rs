@@ -23,6 +23,10 @@ use tokio::sync::{mpsc, watch};
 #[path = "server/identity.rs"]
 mod identity;
 use identity::{Admins, Identity, join_identity, normalize_id};
+#[path = "server/stats.rs"]
+mod stats;
+use blunderjack::engine::BotStyle;
+use stats::{GameResult, Stats};
 
 #[tokio::main]
 async fn main() {
@@ -43,8 +47,10 @@ async fn main() {
             .expect("could not migrate server administrators");
     }
     let admins = Admins::load(admin_path).expect("could not load server administrators");
+    let stats = Stats::load(PathBuf::from(format!("blunderjack-stats-{port}.json")))
+        .expect("could not load game statistics");
     let (tx, rx) = mpsc::channel(256);
-    tokio::spawn(room(rx, admins));
+    tokio::spawn(room(rx, admins, stats));
     let console_tx = tx.clone();
     std::thread::spawn(move || {
         for line in io::stdin().lock().lines() {
@@ -219,6 +225,8 @@ enum Event {
 
 struct Player {
     bot: bool,
+    bot_style: BotStyle,
+    stats_key: String,
     profile: Value,
     identity: Option<Identity>,
     seat: Option<usize>,
@@ -229,10 +237,10 @@ struct Player {
     emoji: Option<(&'static str, Instant)>,
     gaze: Option<(f64, f64, bool)>,
     latency_ms: Option<u64>,
-    first: u32,
-    second: u32,
-    third: u32,
-    losses: u32,
+    first: u64,
+    second: u64,
+    third: u64,
+    losses: u64,
 }
 
 struct PendingBlunder {
@@ -249,6 +257,13 @@ struct Room {
     music_next_order: Vec<usize>,
     password: Option<String>,
     admins: Admins,
+    stats: Stats,
+    quick_mode: bool,
+    analysis_mode: bool,
+    analysis_round: usize,
+    round_stats: Vec<(usize, GameResult)>,
+    round_was_analysis: bool,
+    last_snapshot: Option<Instant>,
     players: HashMap<String, Player>,
     game: blunderjack::engine::Game,
     phase: &'static str,
@@ -283,7 +298,7 @@ fn reveal_duration(cards: usize) -> Duration {
 }
 
 impl Room {
-    fn new(admins: Admins) -> Self {
+    fn new(admins: Admins, stats: Stats) -> Self {
         let mut music_order: Vec<usize> = (0..blunderjack::music_catalog::TRACKS.len()).collect();
         let topless = blunderjack::music_catalog::TRACKS
             .iter()
@@ -300,6 +315,13 @@ impl Room {
             music_next_order,
             password: None,
             admins,
+            stats,
+            quick_mode: false,
+            analysis_mode: false,
+            analysis_round: 0,
+            round_stats: Vec::new(),
+            round_was_analysis: false,
+            last_snapshot: None,
             players: HashMap::new(),
             game: blunderjack::engine::Game::new(),
             phase: "paused",
@@ -421,7 +443,80 @@ impl Room {
         seats
     }
 
+    fn restore_scores(&mut self) {
+        for player in self.players.values_mut() {
+            let (games, first, second, third) =
+                self.stats.counts(&player.stats_key).unwrap_or_default();
+            player.first = first;
+            player.second = second;
+            player.third = third;
+            player.losses = games.saturating_sub(first + second + third);
+        }
+        // Keep podium places already confirmed in the current, unfinished round.
+        if !self.scored_losses {
+            for (index, seat) in self
+                .game
+                .public()
+                .placements
+                .iter()
+                .enumerate()
+                .take(self.scored_placements)
+            {
+                if let Some(player) = self
+                    .round_players
+                    .get(seat)
+                    .and_then(|token| self.players.get_mut(token))
+                {
+                    match index {
+                        0 => player.first += 1,
+                        1 => player.second += 1,
+                        2 => player.third += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    fn prepare_analysis(&mut self) {
+        let mut styles: Vec<_> = (0..10)
+            .map(|i| BotStyle::ALL[(i + self.analysis_round) % BotStyle::ALL.len()])
+            .collect();
+        styles.shuffle(&mut rand::rng());
+        self.analysis_round = (self.analysis_round + 1) % BotStyle::ALL.len();
+        for player in self
+            .players
+            .values_mut()
+            .filter(|p| p.bot && p.seat.is_some())
+        {
+            let seat = player.seat.unwrap();
+            player.bot_style = styles[seat];
+            player.stats_key = format!("bot:{}:{}", seat + 1, player.bot_style.name());
+            player.profile["name"] =
+                json!(format!("Bot {} ({})", seat + 1, player.bot_style.name()));
+        }
+    }
+
     fn start_round_tracking(&mut self, seats: &[usize]) {
+        self.restore_scores();
+        self.round_was_analysis = self.analysis_mode;
+        self.round_stats = self
+            .players
+            .values()
+            .filter_map(|p| {
+                p.seat.filter(|seat| seats.contains(seat)).map(|seat| {
+                    (
+                        seat,
+                        GameResult {
+                            key: p.stats_key.clone(),
+                            name: p.profile["name"].as_str().unwrap_or("Player").to_owned(),
+                            style: p.bot.then(|| p.bot_style.name().to_owned()),
+                            place: None,
+                        },
+                    )
+                })
+            })
+            .collect();
         self.round_players = self
             .players
             .iter()
@@ -462,6 +557,21 @@ impl Room {
                     if let Some(player) = self.players.get_mut(token) {
                         player.losses += 1;
                     }
+                }
+            }
+            let results: Vec<_> = self
+                .round_stats
+                .iter()
+                .map(|(seat, result)| GameResult {
+                    key: result.key.clone(),
+                    name: result.name.clone(),
+                    style: result.style.clone(),
+                    place: view.placements.iter().position(|placed| placed == seat),
+                })
+                .collect();
+            if !results.is_empty() {
+                if let Err(err) = self.stats.record_game(&results, self.round_was_analysis) {
+                    eprintln!("Could not save game statistics: {err}");
                 }
             }
             self.scored_losses = true;
@@ -591,6 +701,74 @@ impl Room {
         if matches!(verb, "bot_add" | "bot_remove") {
             return Some(self.bot_command(verb, target));
         }
+        if verb == "quick_mode" {
+            let enabled = match target {
+                "on" => true,
+                "off" => false,
+                _ => return Some("Usage: quick_mode on/off".into()),
+            };
+            if self.analysis_mode && !enabled {
+                return Some("Use stop_analysis to stop analysis and turn quick mode off.".into());
+            }
+            self.set_quick_mode(enabled);
+            self.broadcast();
+            return Some(format!(
+                "Quick mode {}.",
+                if enabled { "on" } else { "off" }
+            ));
+        }
+        if matches!(verb, "start_bot_analysis" | "stop_analysis" | "stats") {
+            if !target.is_empty() {
+                return Some(format!("Usage: {verb}"));
+            }
+            if verb == "stats" {
+                return Some(self.stats.overview());
+            }
+            if verb == "start_bot_analysis" {
+                if self.analysis_mode {
+                    return Some("Bot analysis is already running.".into());
+                }
+                if self.players.values().any(|p| !p.bot && p.seat.is_some()) {
+                    return Some(
+                        "Cannot start analysis while humans are seated; stand up first.".into(),
+                    );
+                }
+                self.pause_game();
+                self.players.retain(|_, p| !p.bot);
+                self.analysis_mode = true;
+                self.set_quick_mode(true);
+                for seat in 1..=10 {
+                    self.bot_command("bot_add", &seat.to_string());
+                }
+                self.prepare_analysis();
+                let seats = self.connected_seats();
+                if let Err(err) = self.game.start(&seats) {
+                    return Some(format!("Could not start analysis: {err}"));
+                }
+                self.start_round_tracking(&seats);
+                self.begin_deal(seats.len());
+                self.phase = "playing";
+                self.last_snapshot = None;
+                self.broadcast();
+                return Some("Bot analysis started with ten bots and six rotating styles.".into());
+            }
+            if !self.analysis_mode {
+                return Some("Bot analysis is not running.".into());
+            }
+            self.pause_game();
+            self.analysis_mode = false;
+            self.players.retain(|_, p| !p.bot);
+            self.set_quick_mode(false);
+            self.restore_scores();
+            self.broadcast();
+            if let Err(err) = self.stats.save() {
+                eprintln!("Could not save game statistics: {err}");
+            }
+            return Some(format!(
+                "Bot analysis stopped; unfinished round discarded.\n{}",
+                self.stats.overview()
+            ));
+        }
         if verb == "password_set" {
             match serde_json::from_str::<String>(target) {
                 Ok(password) if password.is_empty() => {
@@ -633,7 +811,7 @@ impl Room {
             "" => return None,
             _ => {
                 return Some(
-                    "Unknown command. Use game_start, game_restart, password_set, player_list, bot_add, bot_remove, admin_add, admin_remove, admin_list, or prank_help."
+                    "Unknown command. Use game_start, game_restart, password_set, player_list, bot_add, bot_remove, quick_mode, start_bot_analysis, stop_analysis, stats, admin_add, admin_remove, admin_list, or prank_help."
                         .into(),
                 );
             }
@@ -645,6 +823,10 @@ impl Room {
                 if restart { "restart" } else { "start" },
                 seats.len()
             ));
+        }
+        self.score_round(&self.game.public());
+        if self.analysis_mode {
+            self.prepare_analysis();
         }
         match self.game.start(&seats) {
             Ok(()) => {
@@ -666,13 +848,81 @@ impl Room {
         }
     }
 
+    fn pause_game(&mut self) {
+        self.score_round(&self.game.public());
+        self.game = blunderjack::engine::Game::new();
+        self.phase = "paused";
+        self.deadline = None;
+        self.candidate = None;
+        self.reveal_until = None;
+        self.pending_blunder = None;
+        self.bot_turn = None;
+        self.deal_ready = None;
+        self.round_players.clear();
+        self.round_stats.clear();
+        self.scored_placements = 0;
+        self.scored_losses = false;
+        self.logged_round = 0;
+        self.logged_turn = None;
+        self.logged_winner = None;
+    }
+
+    fn set_quick_mode(&mut self, enabled: bool) {
+        self.quick_mode = enabled;
+        self.bot_turn = None;
+        self.deal_ready = None;
+        self.reveal_until = None;
+        self.last_snapshot = None;
+        let now = Instant::now();
+        if let Some(pending) = &mut self.pending_blunder {
+            pending.started = now;
+            pending.deadline = now
+                + if enabled {
+                    Duration::ZERO
+                } else {
+                    Duration::from_secs(2)
+                };
+        }
+        if matches!(self.phase, "finishing" | "countdown") {
+            self.deadline = Some(
+                now + if enabled {
+                    Duration::ZERO
+                } else if self.phase == "finishing" {
+                    Duration::from_secs(8)
+                } else {
+                    Duration::from_secs(5)
+                },
+            );
+        }
+    }
+
     fn begin_deal(&mut self, players: usize) {
         self.bot_turn = None;
+        if self.quick_mode {
+            self.deal_ready = None;
+            return;
+        }
         let millis = 700 + (7 * players - 1) * 100 + 250;
         self.deal_ready = Some(Instant::now() + Duration::from_millis(millis as u64));
     }
 
     fn bot_command(&mut self, verb: &str, target: &str) -> String {
+        let mut arguments = target.split_whitespace();
+        let target = arguments.next().unwrap_or("");
+        let style = match arguments.next() {
+            Some(style) if verb == "bot_add" => match BotStyle::parse(style) {
+                Some(style) => style,
+                None => return "Unknown style. Use greedy, aggressive, defensive, suit_control, tactical, or random.".into(),
+            },
+            Some(_) => return "Usage: bot_remove <seat number 1-10>".into(),
+            None => BotStyle::Greedy,
+        };
+        if arguments.next().is_some() {
+            return "Usage: bot_add <seat number 1-10> [style]".into();
+        }
+        if self.analysis_mode && self.phase != "paused" {
+            return "Use stop_analysis before changing analysis bots.".into();
+        }
         let seat = target
             .strip_prefix('#')
             .unwrap_or(target)
@@ -697,13 +947,16 @@ impl Room {
             }
             let token = format!("bot-{}", rand::random::<u128>());
             self.players.insert(token, Player {
-                bot: true, profile: json!({"name":format!("Bot {}", seat + 1), "gender":"neutral", "hairStyle":"short", "hairColor":"#493327", "skinColor":"#c68e6a", "sweaterColor":"#507da1"}),
+                bot: true, bot_style: style, stats_key: format!("bot:{}:{}", seat + 1, style.name()), profile: json!({"name":format!("Bot {} ({})", seat + 1, style.name()), "gender":"neutral", "hairStyle":"short", "hairColor":"#493327", "skinColor":"#c68e6a", "sweaterColor":"#507da1"}),
                 identity: None, seat: Some(seat), session: None, sender: None,
                 disconnected: None, look: None, emoji: None, gaze: None, latency_ms: None,
                 first: 0, second: 0, third: 0, losses: 0,
             });
+            self.restore_scores();
             self.update_phase();
-            self.broadcast();
+            if !self.analysis_mode {
+                self.broadcast();
+            }
             format!("Bot added at seat {}. It joins the next deal.", seat + 1)
         } else {
             let Some((token, is_bot)) = occupant else {
@@ -727,7 +980,7 @@ impl Room {
         }
     }
 
-    fn tick_bot(&mut self, now: Instant) {
+    fn tick_bot(&mut self, now: Instant) -> bool {
         let view = self.game.public();
         if self.phase != "playing"
             || self.pending_blunder.is_some()
@@ -735,7 +988,7 @@ impl Room {
             || self.deal_ready.is_some_and(|end| now < end)
         {
             self.bot_turn = None;
-            return;
+            return false;
         }
         let Some(seat) = view.current.filter(|seat| {
             self.players
@@ -743,27 +996,35 @@ impl Room {
                 .any(|p| p.bot && p.seat == Some(*seat))
         }) else {
             self.bot_turn = None;
-            return;
+            return false;
         };
-        match self.bot_turn {
-            Some((round, turn, ready)) if round == view.round && turn == seat => {
-                if now < ready {
-                    return;
+        if !self.quick_mode {
+            match self.bot_turn {
+                Some((round, turn, ready)) if round == view.round && turn == seat => {
+                    if now < ready {
+                        return false;
+                    }
                 }
-            }
-            _ => {
-                self.bot_turn = Some((view.round, seat, now + Duration::from_secs(1)));
-                return;
+                _ => {
+                    self.bot_turn = Some((view.round, seat, now + Duration::from_secs(1)));
+                    return false;
+                }
             }
         }
         self.bot_turn = None;
-        let cards = self.game.bot_play(seat);
+        let style = self
+            .players
+            .values()
+            .find(|p| p.bot && p.seat == Some(seat))
+            .unwrap()
+            .bot_style;
+        let cards = self.game.bot_play_style(seat, style);
         let result = if cards.is_empty() {
             self.game.draw(seat)
         } else {
             let result = self.game.submit(seat, &cards);
             if result.is_ok() {
-                self.reveal_until = Some(now + reveal_duration(cards.len()));
+                self.reveal_until = (!self.quick_mode).then(|| now + reveal_duration(cards.len()));
                 if self.game.hand(seat).len() == 1 {
                     if let Err(err) = self.game.call_last_card(seat) {
                         eprintln!("Bot could not call Last Card: {err}");
@@ -772,12 +1033,14 @@ impl Room {
             }
             result
         };
+        let played = result.is_ok();
         if let Err(err) = result {
             eprintln!("Bot at seat {} could not play: {err}", seat + 1);
         }
         self.logged_turn = None;
         self.update_phase();
         self.broadcast();
+        played
     }
 
     fn console_prank(&mut self, effect: &str, target: &str) -> String {
@@ -916,6 +1179,7 @@ impl Room {
         let view = self.game.public();
         if self.phase == "playing" || self.phase == "finishing" {
             if view.finished {
+                self.score_round(&view);
                 self.phase = "waiting";
                 self.deadline = None;
                 self.candidate = None;
@@ -923,10 +1187,18 @@ impl Room {
                 if self.phase != "finishing" || self.candidate != Some(candidate) {
                     self.phase = "finishing";
                     self.candidate = Some(candidate);
-                    self.deadline = Some(self.reveal_until.unwrap_or(now) + Duration::from_secs(8));
+                    self.deadline = Some(
+                        self.reveal_until.unwrap_or(now)
+                            + if self.quick_mode {
+                                Duration::ZERO
+                            } else {
+                                Duration::from_secs(8)
+                            },
+                    );
                 }
                 if self.deadline.is_some_and(|d| now >= d) {
                     self.game.finish();
+                    self.score_round(&self.game.public());
                     self.phase = if self.game.public().finished {
                         "waiting"
                     } else {
@@ -943,7 +1215,13 @@ impl Room {
         }
         if self.phase == "waiting" && self.connected_seats().len() >= 2 {
             self.phase = "countdown";
-            self.deadline = Some(now + Duration::from_secs(5));
+            self.deadline = Some(
+                now + if self.quick_mode {
+                    Duration::ZERO
+                } else {
+                    Duration::from_secs(5)
+                },
+            );
         }
         if self.phase == "countdown" {
             let seats = self.connected_seats();
@@ -951,6 +1229,10 @@ impl Room {
                 self.phase = "waiting";
                 self.deadline = None;
             } else if self.deadline.is_some_and(|d| now >= d) {
+                self.score_round(&self.game.public());
+                if self.analysis_mode {
+                    self.prepare_analysis();
+                }
                 match self.game.start(&seats) {
                     Ok(()) => {
                         self.start_round_tracking(&seats);
@@ -972,6 +1254,15 @@ impl Room {
     fn broadcast(&mut self) {
         let view = self.game.public();
         self.score_round(&view);
+        let now = Instant::now();
+        if self.quick_mode
+            && self
+                .last_snapshot
+                .is_some_and(|last| now.duration_since(last) < Duration::from_millis(100))
+        {
+            return;
+        }
+        self.last_snapshot = Some(now);
         let mut seats = vec![Value::Null; 10];
         let mut gestures = vec![Value::Null; 10];
         for p in self.players.values() {
@@ -1005,7 +1296,9 @@ impl Room {
         } else {
             None
         };
-        self.log_game_state(&view);
+        if !self.quick_mode {
+            self.log_game_state(&view);
+        }
         let pending_blunder = self.pending_blunder.as_ref().map(|pending| json!({
             "caller": pending.caller,
             "playId": pending.play_id,
@@ -1026,7 +1319,7 @@ impl Room {
                     .seat
                     .filter(|_| self.pending_blunder.is_none())
                     .and_then(|s| self.game.challenge_id(s));
-                let state = json!({"type":"state","state":{"phase":self.phase,"countdownMs":countdown,"seats":seats,"you":p.seat,"hand":hand,"canBlunder":challenge_play_id.is_some(),"challengePlayId":challenge_play_id,"lastCardRule":true,"pendingBlunder":pending_blunder,"gestures":gestures,"sharedGaze":true,"emojiEmotes":true,"cosmeticReorder":true,"chat":true,"game":view,"spectators":spectators,"scoreboard":self.scoreboard(token)}});
+                let state = json!({"type":"state","state":{"quickMode":self.quick_mode,"analysisMode":self.analysis_mode,"phase":self.phase,"countdownMs":countdown,"seats":seats,"you":p.seat,"hand":hand,"canBlunder":challenge_play_id.is_some(),"challengePlayId":challenge_play_id,"lastCardRule":true,"pendingBlunder":pending_blunder,"gestures":gestures,"sharedGaze":true,"emojiEmotes":true,"cosmeticReorder":true,"chat":true,"game":view,"spectators":spectators,"scoreboard":self.scoreboard(token)}});
                 if !Self::send(sender, state) {
                     dead.push(token.clone());
                 }
@@ -1133,6 +1426,10 @@ impl Room {
                     | "player_list"
                     | "bot_add"
                     | "bot_remove"
+                    | "quick_mode"
+                    | "start_bot_analysis"
+                    | "stop_analysis"
+                    | "stats"
                     | "admin_add"
                     | "admin_remove"
                     | "admin_list"
@@ -1249,7 +1546,7 @@ impl Room {
         match command.split_whitespace().next() {
             None => Self::chat_notice(
                 send,
-                "Use /admin <command>. Commands include game_start, game_restart, password_set, player_list, bot_add, bot_remove, admin_add, admin_remove, admin_list and prank_help.",
+                "Use /admin <command>. Commands include game_start, game_restart, password_set, player_list, bot_add, bot_remove, quick_mode, start_bot_analysis, stop_analysis, stats, admin_add, admin_remove, admin_list and prank_help.",
             ),
             Some(_) => {
                 eprintln!("Admin {} ran a command from chat.", identity.id);
@@ -1373,6 +1670,8 @@ impl Room {
                     token.clone(),
                     Player {
                         bot: false,
+                        bot_style: BotStyle::Greedy,
+                        stats_key: String::new(),
                         profile,
                         identity,
                         seat: None,
@@ -1391,6 +1690,18 @@ impl Room {
                 );
                 token
             };
+            let player = self.players.get_mut(&token).unwrap();
+            player.stats_key = player.identity.as_ref().map_or_else(
+                || format!("legacy:{token}"),
+                |id| {
+                    format!(
+                        "player:{}:{}",
+                        if id.verified { "verified" } else { "guest" },
+                        id.id
+                    )
+                },
+            );
+            self.restore_scores();
             if let Some(identity) = &self.players[&token].identity {
                 eprintln!(
                     "{} client ID {} ({}).",
@@ -1500,7 +1811,9 @@ impl Room {
                 None => Err("Invalid profile".into()),
             },
             "seat" => {
-                if seat.is_some() {
+                if self.analysis_mode {
+                    Err("Stop bot analysis before taking a seat".into())
+                } else if seat.is_some() {
                     Err("Stand before changing seats".into())
                 } else if let Some(n) = value
                     .get("seat")
@@ -1592,8 +1905,8 @@ impl Room {
                     match ids {
                         Some(ids) if !ids.is_empty() && ids.len() <= 208 => {
                             self.game.submit(s, &ids).map(|()| {
-                                self.reveal_until =
-                                    Some(Instant::now() + reveal_duration(ids.len()));
+                                self.reveal_until = (!self.quick_mode)
+                                    .then(|| Instant::now() + reveal_duration(ids.len()));
                             })
                         }
                         _ => Err("Invalid cards".into()),
@@ -1636,7 +1949,12 @@ impl Room {
                             caller: s,
                             play_id,
                             started: now,
-                            deadline: now + Duration::from_millis(2000),
+                            deadline: now
+                                + if self.quick_mode {
+                                    Duration::ZERO
+                                } else {
+                                    Duration::from_millis(2000)
+                                },
                         });
                         Ok(())
                     } else {
@@ -1790,7 +2108,17 @@ impl Room {
             }
         }
         self.update_phase();
-        self.tick_bot(now);
+        if self.quick_mode {
+            for _ in 0..64 {
+                self.update_phase();
+                if !self.tick_bot(Instant::now()) {
+                    break;
+                }
+            }
+            self.broadcast();
+        } else {
+            self.tick_bot(now);
+        }
         if gestures_expired
             || had_expired
             || before
@@ -1839,12 +2167,17 @@ fn normalize_profile(profile: &Value) -> Option<Value> {
     Some(normalized)
 }
 
-async fn room(mut rx: mpsc::Receiver<Event>, admins: Admins) {
-    let mut room = Room::new(admins);
+async fn room(mut rx: mpsc::Receiver<Event>, admins: Admins, stats: Stats) {
+    let mut room = Room::new(admins, stats);
     let mut tick = tokio::time::interval(Duration::from_millis(250));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
+        let period = Duration::from_millis(if room.quick_mode { 1 } else { 250 });
+        if tick.period() != period {
+            tick = tokio::time::interval(period);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        }
         tokio::select! {
-            biased;
             Some(event) = rx.recv() => { match event {
                 Event::Connected { send } => { Room::send(&send, json!({"type":"hello","passwordRequired":room.password.is_some(),"version":blunderjack::GAME_VERSION,"clientIdentity":true})); },
                 Event::Console(command) => room.console_command(&command),

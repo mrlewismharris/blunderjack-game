@@ -438,6 +438,18 @@ function connect() {
     } else if (msg.type === "state") {
       const previous = state;
       state = msg.state;
+      const quickMode = state.quickMode === true;
+      document.documentElement.classList.toggle("quick-mode", quickMode);
+      if (quickMode) {
+        clearTimeout(dealTimer);
+        clearTimeout(presentationTimer);
+        dealing = false;
+        revealing = false;
+        if (!previous?.quickMode) hideAnnouncement();
+        if (!previous?.quickMode)
+          $("hand").getAnimations({ subtree: true }).forEach((animation) => animation.cancel());
+      }
+      document.dispatchEvent(new CustomEvent("blunderjack:quick-mode", { detail: quickMode }));
       updateChatAvailability();
       if (!Array.isArray(state.scoreboard) && previous?.scoreboard)
         state.scoreboard = previous.scoreboard;
@@ -455,7 +467,7 @@ function connect() {
         playBlunderCall();
       }
       const newDeal = previous && state.game.round !== previous.game.round &&
-        state.phase === "playing" && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+        state.phase === "playing" && !state.quickMode && !matchMedia("(prefers-reduced-motion: reduce)").matches;
       if (dealing && (state.game.round !== previous?.game.round || state.game.last)) {
         clearTimeout(dealTimer);
         dealing = false;
@@ -800,6 +812,7 @@ function renderSeats(seats, game, playing, cameraSeat) {
         active: playing ? game.active : [],
         last: playing ? game.last : null,
         pendingBlunder: state.pendingBlunder,
+        quickMode: state.quickMode === true,
       },
     }),
   );
@@ -990,7 +1003,7 @@ function startHandDrag(event, card, id) {
       hand.insertBefore(card, before || null);
       others.forEach((item) => {
         const delta = positions.get(item) - item.getBoundingClientRect().left;
-        if (delta)
+        if (delta && !state?.quickMode)
           item.animate(
             [
               { transform: `translateX(${delta}px)` },
@@ -1123,7 +1136,7 @@ function present(previous) {
   lastShown = last.id;
   clearTimeout(presentationTimer);
   revealing = false;
-  if (game.round !== previous?.game?.round) return;
+  if (state.quickMode || game.round !== previous?.game?.round) return;
 
   if (last.kind === "draw" || last.kind === "blunder") {
     const upheld = last.kind === "blunder" && last.outcome === "invalid";
@@ -1336,6 +1349,7 @@ function hideAnnouncement() {
 }
 function showAnnouncement(title, detail, duration, style = "") {
   hideAnnouncement();
+  if (state?.quickMode) return;
   const announcement = $("action-announcement");
   $("announcement-title").textContent = title;
   $("announcement-detail").textContent = detail;
@@ -1508,6 +1522,8 @@ function resetTable() {
   $("last-card-button").disabled = true;
   $("seats").replaceChildren();
   state = null;
+  document.documentElement.classList.remove("quick-mode");
+  document.dispatchEvent(new CustomEvent("blunderjack:quick-mode", { detail: false }));
   updateChatAvailability();
   selected = [];
   order = [];

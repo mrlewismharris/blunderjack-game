@@ -1534,3 +1534,8 @@ body:has(.intro-running) {
   vertical-align: middle;
   fill: currentColor;
 }
+
+.quick-mode .action-announcement,
+.quick-mode .shuffle i {
+  animation: none;
+}

@@ -832,6 +832,8 @@ function createTable(container) {
   const overviewButton = document.getElementById("camera-overview");
   const firstPersonButton = document.getElementById("camera-first-person");
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  let quickMode = false;
+  const motionReduced = () => reducedMotion.matches || quickMode;
   const target = new THREE.Vector3();
   const projected = new THREE.Vector3();
   const ray = new THREE.Raycaster();
@@ -950,7 +952,7 @@ function createTable(container) {
       return;
     }
     if (
-      reducedMotion.matches ||
+      motionReduced() ||
       !["play", "draw"].includes(kind) ||
       !Number.isInteger(seat) ||
       !avatars[seat] ||
@@ -998,7 +1000,7 @@ function createTable(container) {
     deal = null;
     const order = (detail?.seats || []).filter((seat) => Number.isInteger(seat) && avatars[seat]);
     const counts = detail?.counts || [];
-    if (reducedMotion.matches || !order.length) {
+    if (motionReduced() || !order.length) {
       document.dispatchEvent(new CustomEvent("blunderjack:deal-complete"));
       return;
     }
@@ -1205,7 +1207,7 @@ function createTable(container) {
       avatar.danglingBalls.visible = false;
       avatar.sweater.material.color.copy(avatar.sweaterColor);
       if (prank) {
-        const duration = reducedMotion.matches
+        const duration = motionReduced()
           ? 900
           : prank.effect === "teabag"
             ? 9250
@@ -1226,9 +1228,9 @@ function createTable(container) {
             return t * t * (3 - 2 * t);
           };
           const amount = smooth(progress / 0.2) * smooth((1 - progress) / 0.25);
-          const strength = reducedMotion.matches ? 0.25 : 1;
+          const strength = motionReduced() ? 0.25 : 1;
           if (prank.effect === "teabag") {
-            if (reducedMotion.matches) {
+            if (motionReduced()) {
               avatar.head.scale.setScalar(1 + 0.12 * amount);
             } else {
               // All positions are world-space route points converted into the
@@ -1299,7 +1301,7 @@ function createTable(container) {
           } else if (prank.effect === "bomb") {
             const effect = bombEffects[index];
             effect.root.visible = true;
-            if (reducedMotion.matches) {
+            if (motionReduced()) {
               effect.plane.visible = effect.bomb.visible = false;
               effect.cloud.visible = true;
               effect.cloud.scale.setScalar(0.45);
@@ -1328,11 +1330,11 @@ function createTable(container) {
             avatar.head.position.y += 0.48 * amount * strength;
           } else if (prank.effect === "tiny_head")
             avatar.head.scale.setScalar(1 - 0.7 * amount * strength);
-          else if (prank.effect === "spin_chair" && !reducedMotion.matches) {
+          else if (prank.effect === "spin_chair" && !motionReduced()) {
             spin = TAU * smooth(progress);
             avatar.visual.rotation.y = spin;
             avatar.chair.rotation.y = spin;
-          } else if (prank.effect === "bounce" && !reducedMotion.matches) {
+          } else if (prank.effect === "bounce" && !motionReduced()) {
             avatar.visual.position.y =
               Math.abs(Math.sin(progress * Math.PI * 3)) * 0.65 * amount;
           } else if (prank.effect === "pancake") {
@@ -1370,14 +1372,14 @@ function createTable(container) {
         expression = index === last.seat ? "devious" : "surprised";
       if (caller === index) expression = "shouting";
       const blink =
-        !reducedMotion.matches &&
+        !motionReduced() &&
         (now + index * 719) % (4200 + index * 173) < 38;
       const zoom =
         firstPerson && index === tableState.you
           ? zoomKeys.size > 0
           : sharedGaze[index]?.zoom === true;
       const extension = zoom ? 1 : 0;
-      avatar.eyeExtension = reducedMotion.matches
+      avatar.eyeExtension = motionReduced()
         ? extension
         : THREE.MathUtils.lerp(avatar.eyeExtension, extension, 0.22);
       avatar.eyes.visible = avatar.eyeExtension > 0.03;
@@ -1405,6 +1407,7 @@ function createTable(container) {
       let ownCards = false;
       let lookingAtPot = false;
       if (
+        !quickMode &&
         look == null &&
         !manual &&
         caller == null &&
@@ -1445,7 +1448,7 @@ function createTable(container) {
         desiredPitch = manual.pitch;
       }
       desiredYaw -= spin;
-      if (reducedMotion.matches) {
+      if (motionReduced()) {
         avatar.yaw = desiredYaw;
         avatar.pitch = desiredPitch;
       } else {
@@ -1460,7 +1463,7 @@ function createTable(container) {
       avatar.head.rotation.set(avatar.pitch, avatar.yaw, 0, "YXZ");
       avatar.fan.position.y =
         1.55 +
-        (reducedMotion.matches ? 0 : Math.sin(now / 1000 + index) * 0.025);
+        (motionReduced() ? 0 : Math.sin(now / 1000 + index) * 0.025);
     });
   }
 
@@ -1628,7 +1631,7 @@ function createTable(container) {
       cardFlights.length ||
       avatars.some((avatar) => avatar?.reorder) ||
       pranks.some(Boolean) ||
-      (!reducedMotion.matches && avatars.some(Boolean)) ||
+      (!motionReduced() && avatars.some(Boolean)) ||
       now < reactionUntil
     )
       queueFrame();
@@ -1643,7 +1646,7 @@ function createTable(container) {
       ) -
       Math.PI;
     const to = { ...destination, yaw };
-    if (snap || reducedMotion.matches) {
+    if (snap || motionReduced()) {
       view = to;
       flight = null;
     } else {
@@ -1667,7 +1670,7 @@ function createTable(container) {
       aim.z -= viewer.head.position.z;
       const yaw = THREE.MathUtils.clamp(Math.atan2(aim.x, aim.z), -1.45, 1.45);
       const pitch = Math.atan2(-aim.y, Math.hypot(aim.x, aim.z));
-      if (reducedMotion.matches) {
+      if (motionReduced()) {
         eyeFlight = null;
         eyeYaw = yaw;
         eyePitch = pitch;
@@ -1721,7 +1724,7 @@ function createTable(container) {
     dealerTravel = null;
     chip.visible = next != null;
     if (next != null) {
-      if (dealer == null || reducedMotion.matches) positionChip(next);
+      if (dealer == null || motionReduced()) positionChip(next);
       else
         dealerTravel = {
           from: dealer,
@@ -1736,7 +1739,7 @@ function createTable(container) {
     const now = performance.now();
     if (detail.last?.id !== lastPlayId) {
       lastPlayId = detail.last?.id;
-      reactionUntil = detail.last ? now + 2000 : 0;
+      reactionUntil = !quickMode && detail.last ? now + 2000 : 0;
     }
     if (detail.turn !== lastTurn) {
       lastTurn = detail.turn;
@@ -1780,6 +1783,7 @@ function createTable(container) {
     queueFrame();
   });
   document.addEventListener("blunderjack:prank", ({ detail }) => {
+    if (quickMode) return;
     const { seat, effect, targetSeat } = detail || {};
     if (
       !Number.isInteger(seat) ||
@@ -1854,7 +1858,7 @@ function createTable(container) {
   });
   document.addEventListener("blunderjack:reorder", ({ detail }) => {
     const avatar = avatars[detail?.seat];
-    if (!avatar || avatar.count < 2 || reducedMotion.matches) return;
+    if (!avatar || avatar.count < 2 || motionReduced()) return;
     const from = Math.floor(Math.random() * avatar.count);
     const to =
       (from + 1 + Math.floor(Math.random() * (avatar.count - 1))) %
@@ -2126,8 +2130,39 @@ function createTable(container) {
     if (document.hidden) resetZoom();
     else queueFrame();
   });
+  document.addEventListener("blunderjack:quick-mode", ({ detail }) => {
+    const enabled = detail === true;
+    if (enabled === quickMode) return;
+    quickMode = enabled;
+    if (quickMode) {
+      pranks.fill(null);
+      reactionUntil = 0;
+      bombEffects.forEach((effect) => {
+        if (effect) effect.root.visible = false;
+      });
+      finishDeal();
+      clearCardFlights();
+      if (flight) view = flight.to;
+      flight = null;
+      if (eyeFlight) {
+        eyeYaw = eyeFlight.yaw;
+        eyePitch = eyeFlight.pitch;
+        eyeFlight = null;
+        publishGaze();
+      }
+      if (dealerTravel && dealer != null) positionChip(dealer);
+      dealerTravel = null;
+      avatars.forEach((avatar) => {
+        if (avatar?.reorder) {
+          avatar.reorder = null;
+          avatar.count = -1;
+        }
+      });
+    }
+    queueFrame();
+  });
   reducedMotion.addEventListener("change", () => {
-    if (reducedMotion.matches) {
+    if (motionReduced()) {
       finishDeal();
       clearCardFlights();
     }

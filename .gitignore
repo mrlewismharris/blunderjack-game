@@ -1,3 +1,5 @@
 /target/
 /blackjack-admins-*.txt*
 /blunderjack-admins-*.txt*
+
+/blunderjack-stats-*.json*

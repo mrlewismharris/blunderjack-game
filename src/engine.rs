@@ -1,5 +1,39 @@
-use rand::seq::SliceRandom;
+use rand::seq::{IndexedRandom, SliceRandom};
 use serde::Serialize;
+
+/// Strategy used when choosing a legal bot play.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BotStyle {
+    Greedy,
+    Aggressive,
+    Defensive,
+    SuitControl,
+    Tactical,
+    Random,
+}
+impl BotStyle {
+    pub const ALL: [Self; 6] = [
+        Self::Greedy,
+        Self::Aggressive,
+        Self::Defensive,
+        Self::SuitControl,
+        Self::Tactical,
+        Self::Random,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Greedy => "greedy",
+            Self::Aggressive => "aggressive",
+            Self::Defensive => "defensive",
+            Self::SuitControl => "suit_control",
+            Self::Tactical => "tactical",
+            Self::Random => "random",
+        }
+    }
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|style| style.name() == name)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -273,20 +307,80 @@ impl Game {
             }
         })
     }
-    /// Select a legal play using only this seat's hand and the board. An empty
-    /// result means the bot should draw.
+    /// Select a legal play using the default greedy strategy.
     pub fn bot_play(&self, seat: usize) -> Vec<u32> {
+        self.bot_play_style(seat, BotStyle::Greedy)
+    }
+
+    /// Select a legal play using only this seat's hand and public board state.
+    /// Empty means draw. Search is bounded to 16 starts and one greedy chain
+    /// per start; every prefix is considered as a possible stopping point.
+    pub fn bot_play_style(&self, seat: usize, style: BotStyle) -> Vec<u32> {
         if self.check_turn(seat).is_err() || self.pot.is_empty() {
             return Vec::new();
         }
         let hand = self.hand(seat);
+        let mut order: Vec<Card> = hand.to_vec();
+        if style == BotStyle::Random {
+            order.shuffle(&mut rand::rng());
+        }
+        let next_count = self
+            .next_from(seat, self.direction)
+            .map(|next| self.public().counts[next])
+            .unwrap_or(usize::MAX);
         let mut best = Vec::new();
-        // Try several legal starting cards, then greedily extend each chain.
-        // The fixed number of starts keeps large penalty hands manageable.
-        for &first in hand.iter().filter(|&&card| self.legal(&[card])).take(16) {
+        let mut best_score = i64::MIN;
+        let mut random_candidates = Vec::new();
+        for &first in order.iter().filter(|&&card| self.legal(&[card])).take(16) {
             let mut chain = vec![first];
             loop {
-                let next = hand.iter().copied().find(|card| {
+                let last = *chain.last().unwrap();
+                let remaining_suit = hand
+                    .iter()
+                    .filter(|c| c.suit == last.suit && !chain.iter().any(|p| p.id == c.id))
+                    .count() as i64;
+                let defenses = chain
+                    .iter()
+                    .filter(|&&c| c.rank == 1 || Self::is_red(c))
+                    .count() as i64;
+                let special = if last.rank == 2 || Self::is_black(last) {
+                    3
+                } else if last.rank == 12 {
+                    2
+                } else {
+                    0
+                };
+                let length = chain.len() as i64;
+                let score = if chain.len() == hand.len() {
+                    i64::MAX
+                } else {
+                    match style {
+                        BotStyle::Greedy | BotStyle::Random => length,
+                        BotStyle::Aggressive => length * 4 + special * 3,
+                        BotStyle::Defensive => length * 5 - defenses * 8,
+                        BotStyle::SuitControl => length * 3 + remaining_suit * 4,
+                        BotStyle::Tactical => {
+                            length * 4
+                                + special * if next_count <= 2 { 5 } else { 1 }
+                                + if last.rank == 8 && next_count <= 2 {
+                                    5
+                                } else {
+                                    0
+                                }
+                        }
+                    }
+                };
+                if style == BotStyle::Random && score != i64::MAX {
+                    random_candidates.push(chain.clone());
+                }
+                if score > best_score {
+                    best_score = score;
+                    best = chain.clone();
+                }
+                if best_score == i64::MAX {
+                    break;
+                }
+                let next = order.iter().copied().find(|card| {
                     if chain.iter().any(|played| played.id == card.id) {
                         return false;
                     }
@@ -300,11 +394,13 @@ impl Game {
                     None => break,
                 }
             }
-            if chain.len() > best.len() {
-                best = chain;
-            }
-            if best.len() == hand.len() {
+            if best_score == i64::MAX {
                 break;
+            }
+        }
+        if style == BotStyle::Random && best_score != i64::MAX {
+            if let Some(choice) = random_candidates.choose(&mut rand::rng()) {
+                best = choice.clone();
             }
         }
         best.into_iter().map(|card| card.id).collect()
