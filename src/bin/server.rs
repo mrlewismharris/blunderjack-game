@@ -1,7 +1,7 @@
 use axum::{
     Router,
     extract::{
-        State, WebSocketUpgrade,
+        ConnectInfo, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::{StatusCode, Uri, header},
@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     io::{self, BufRead},
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -68,7 +69,12 @@ async fn main() {
     eprintln!("BlunderJack server version: {}", blunderjack::GAME_VERSION);
     eprintln!("Listening on http://{}", listener.local_addr().unwrap());
     eprintln!("Waiting for game_start in this console.");
-    axum::serve(listener, app).await.expect("server failed");
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .expect("server failed");
 }
 
 async fn asset(uri: Uri) -> Response {
@@ -96,22 +102,27 @@ async fn asset(uri: Uri) -> Response {
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
-async fn upgrade(ws: WebSocketUpgrade, State(tx): State<mpsc::Sender<Event>>) -> Response {
+async fn upgrade(
+    ws: WebSocketUpgrade,
+    State(tx): State<mpsc::Sender<Event>>,
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
+) -> Response {
     ws.max_message_size(16 * 1024)
-        .on_upgrade(move |socket| session(socket, tx))
+        .on_upgrade(move |socket| session(socket, tx, address.ip()))
 }
 
 #[derive(Clone)]
 struct Session {
+    ip: IpAddr,
     send: mpsc::Sender<String>,
     close: watch::Sender<bool>,
 }
 
-async fn session(socket: WebSocket, tx: mpsc::Sender<Event>) {
+async fn session(socket: WebSocket, tx: mpsc::Sender<Event>, ip: IpAddr) {
     let (mut outgoing, mut incoming) = socket.split();
     let (send, mut recv) = mpsc::channel::<String>(32);
     let (close, mut closed) = watch::channel(false);
-    let session = Session { send, close };
+    let session = Session { ip, send, close };
     let id = rand::random::<u64>();
     if tx
         .send(Event::Connected {
@@ -207,13 +218,14 @@ enum Event {
 }
 
 struct Player {
+    bot: bool,
     profile: Value,
     identity: Option<Identity>,
     seat: Option<usize>,
     session: Option<u64>,
     sender: Option<Session>,
     disconnected: Option<Instant>,
-    look: Option<(u64, Instant)>,
+    look: Option<(String, Instant)>,
     emoji: Option<(&'static str, Instant)>,
     gaze: Option<(f64, f64, bool)>,
     latency_ms: Option<u64>,
@@ -251,6 +263,8 @@ struct Room {
     scored_placements: usize,
     scored_losses: bool,
     scoreboard_dirty: bool,
+    bot_turn: Option<(u32, usize, Instant)>,
+    deal_ready: Option<Instant>,
 }
 
 const SELF_PRANKS: &[&str] = &[
@@ -300,6 +314,8 @@ impl Room {
             scored_placements: 0,
             scored_losses: false,
             scoreboard_dirty: false,
+            bot_turn: None,
+            deal_ready: None,
         }
     }
 
@@ -398,7 +414,7 @@ impl Room {
         let mut seats: Vec<_> = self
             .players
             .values()
-            .filter(|p| p.session.is_some())
+            .filter(|p| p.bot || p.session.is_some())
             .filter_map(|p| p.seat)
             .collect();
         seats.sort_unstable();
@@ -456,7 +472,11 @@ impl Room {
         let mut rows: Vec<_> = self
             .players
             .iter()
-            .filter(|(_, p)| p.session.is_some() || p.first + p.second + p.third + p.losses > 0)
+            .filter(|(_, p)| {
+                p.bot && p.seat.is_some()
+                    || p.session.is_some()
+                    || p.first + p.second + p.third + p.losses > 0
+            })
             .map(|(token, p)| (token, p))
             .collect();
         rows.sort_by(|(ta, a), (tb, b)| {
@@ -468,7 +488,7 @@ impl Room {
                 .then(a.profile["name"].as_str().cmp(&b.profile["name"].as_str()))
                 .then(ta.cmp(tb))
         });
-        rows.into_iter().map(|(token, p)| json!({"name":p.profile["name"], "first":p.first, "second":p.second, "third":p.third, "losses":p.losses, "latencyMs":p.latency_ms, "connected":p.session.is_some(), "you":token == viewer})).collect()
+        rows.into_iter().map(|(token, p)| json!({"name":p.profile["name"], "first":p.first, "second":p.second, "third":p.third, "losses":p.losses, "latencyMs":p.latency_ms, "connected":p.bot && p.seat.is_some() || p.session.is_some(), "you":token == viewer})).collect()
     }
 
     fn broadcast_scoreboard(&self) {
@@ -483,42 +503,6 @@ impl Room {
     }
 
     fn console_command(&mut self, command: &str) {
-        let command = command.trim();
-        let (verb, argument) = command
-            .split_once(char::is_whitespace)
-            .map_or((command, ""), |(verb, argument)| (verb, argument.trim()));
-        if matches!(verb, "admin_add" | "admin_remove") {
-            let Some(id) = normalize_id(argument) else {
-                eprintln!("Usage: {verb} <client ID>");
-                return;
-            };
-            let enabled = verb == "admin_add";
-            if enabled && id.as_bytes()[14] != b'8' {
-                eprintln!("Use the verified client ID from /id on a local or wss:// connection.");
-                return;
-            }
-            match self.admins.set(&id, enabled) {
-                Ok(true) if enabled => eprintln!("Admin access granted to {id}."),
-                Ok(true) => eprintln!("Admin access revoked for {id}."),
-                Ok(false) if enabled => eprintln!("{id} already has admin access."),
-                Ok(false) => eprintln!("{id} has no admin access."),
-                Err(err) => eprintln!("Could not save administrators: {err}"),
-            }
-            return;
-        }
-        if verb == "admin_list" {
-            if !argument.is_empty() {
-                eprintln!("Usage: admin_list");
-            } else {
-                let ids = self.admins.list().collect::<Vec<_>>().join(", ");
-                if ids.is_empty() {
-                    eprintln!("No administrators configured.");
-                } else {
-                    eprintln!("Administrators: {ids}");
-                }
-            }
-            return;
-        }
         if let Some(response) = self.execute_server_command(command) {
             eprintln!("{response}");
         }
@@ -529,6 +513,84 @@ impl Room {
         let (verb, target) = command
             .split_once(char::is_whitespace)
             .map_or((command, ""), |(verb, target)| (verb, target.trim()));
+        if matches!(verb, "admin_add" | "admin_remove") {
+            let Some(id) = normalize_id(target) else {
+                return Some(format!("Usage: {verb} <client ID>"));
+            };
+            let enabled = verb == "admin_add";
+            if enabled && id.as_bytes()[14] != b'8' {
+                return Some(
+                    "Use the verified client ID from /id on a local or wss:// connection.".into(),
+                );
+            }
+            return Some(match self.admins.set(&id, enabled) {
+                Ok(true) if enabled => format!("Admin access granted to {id}."),
+                Ok(true) => format!("Admin access revoked for {id}."),
+                Ok(false) if enabled => format!("{id} already has admin access."),
+                Ok(false) => format!("{id} has no admin access."),
+                Err(err) => format!("Could not save administrators: {err}"),
+            });
+        }
+        if verb == "admin_list" {
+            if !target.is_empty() {
+                return Some("Usage: admin_list".into());
+            }
+            let ids = self.admins.list().collect::<Vec<_>>().join(", ");
+            return Some(if ids.is_empty() {
+                "No administrators configured.".into()
+            } else {
+                format!("Administrators: {ids}")
+            });
+        }
+        if verb == "player_list" {
+            if !target.is_empty() {
+                return Some("Usage: player_list".into());
+            }
+            let mut players: Vec<_> = self
+                .players
+                .values()
+                .filter(|p| p.sender.is_some() || (p.bot && p.seat.is_some()))
+                .collect();
+            players.sort_by(|a, b| a.profile["name"].as_str().cmp(&b.profile["name"].as_str()));
+            if players.is_empty() {
+                return Some("No players connected.".into());
+            }
+            let mut lines = vec![format!("Connected players ({}):", players.len())];
+            for player in players {
+                if player.bot {
+                    lines.push(format!(
+                        "{} | bot | seat {}",
+                        Self::player_label(player),
+                        player.seat.unwrap() + 1
+                    ));
+                    continue;
+                }
+                let identity = player.identity.as_ref().map_or_else(
+                    || "unavailable (legacy client)".to_owned(),
+                    |identity| {
+                        format!(
+                            "{} ({})",
+                            identity.id,
+                            if identity.verified {
+                                "verified"
+                            } else {
+                                "unverified"
+                            }
+                        )
+                    },
+                );
+                lines.push(format!(
+                    "{} | IP: {} | ID: {}",
+                    Self::player_label(player),
+                    player.sender.as_ref().unwrap().ip,
+                    identity
+                ));
+            }
+            return Some(lines.join("\n"));
+        }
+        if matches!(verb, "bot_add" | "bot_remove") {
+            return Some(self.bot_command(verb, target));
+        }
         if verb == "password_set" {
             match serde_json::from_str::<String>(target) {
                 Ok(password) if password.is_empty() => {
@@ -549,7 +611,7 @@ impl Room {
         }
         if verb == "prank_help" {
             return Some(format!(
-                "Prank commands: {}, bomb, teabag.\nUsage: <command> <username> (quote names with spaces if desired), or <command> #<seat number>.\nTwo-player prank: teabag <player1> <player2> (e.g. teabag #1 #3).",
+                "Prank commands: {}, bomb, teabag.\nUsage: <command> <username> (quote names with spaces if desired), or <command> <seat number>.\nTwo-player prank: teabag <player1> <player2> (e.g. teabag 1 3).",
                 SELF_PRANKS.join(", ")
             ));
         }
@@ -571,7 +633,7 @@ impl Room {
             "" => return None,
             _ => {
                 return Some(
-                    "Unknown command. Use game_start, game_restart, password_set, or prank_help."
+                    "Unknown command. Use game_start, game_restart, password_set, player_list, bot_add, bot_remove, admin_add, admin_remove, admin_list, or prank_help."
                         .into(),
                 );
             }
@@ -587,6 +649,7 @@ impl Room {
         match self.game.start(&seats) {
             Ok(()) => {
                 self.start_round_tracking(&seats);
+                self.begin_deal(seats.len());
                 self.phase = "playing";
                 self.deadline = None;
                 self.candidate = None;
@@ -603,9 +666,123 @@ impl Room {
         }
     }
 
+    fn begin_deal(&mut self, players: usize) {
+        self.bot_turn = None;
+        let millis = 700 + (7 * players - 1) * 100 + 250;
+        self.deal_ready = Some(Instant::now() + Duration::from_millis(millis as u64));
+    }
+
+    fn bot_command(&mut self, verb: &str, target: &str) -> String {
+        let seat = target
+            .strip_prefix('#')
+            .unwrap_or(target)
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=10).contains(n))
+            .map(|n| n - 1);
+        let Some(seat) = seat else {
+            return format!("Usage: {verb} <seat number 1-10>");
+        };
+        let occupant = self
+            .players
+            .iter()
+            .find(|(_, p)| p.seat == Some(seat))
+            .map(|(token, p)| (token.clone(), p.bot));
+        if verb == "bot_add" {
+            if occupant.is_some()
+                || (matches!(self.phase, "playing" | "finishing")
+                    && self.game.public().placements.contains(&seat))
+            {
+                return "That seat is occupied or reserved.".into();
+            }
+            let token = format!("bot-{}", rand::random::<u128>());
+            self.players.insert(token, Player {
+                bot: true, profile: json!({"name":format!("Bot {}", seat + 1), "gender":"neutral", "hairStyle":"short", "hairColor":"#493327", "skinColor":"#c68e6a", "sweaterColor":"#507da1"}),
+                identity: None, seat: Some(seat), session: None, sender: None,
+                disconnected: None, look: None, emoji: None, gaze: None, latency_ms: None,
+                first: 0, second: 0, third: 0, losses: 0,
+            });
+            self.update_phase();
+            self.broadcast();
+            format!("Bot added at seat {}. It joins the next deal.", seat + 1)
+        } else {
+            let Some((token, is_bot)) = occupant else {
+                return "No bot occupies that seat.".into();
+            };
+            if !is_bot {
+                return "That seat belongs to a human player.".into();
+            }
+            if self.pending_blunder.is_some() {
+                return "Wait for the challenge ruling, then remove the bot.".into();
+            }
+            self.score_round(&self.game.public());
+            if matches!(self.phase, "playing" | "finishing") {
+                self.game.remove_player(seat);
+            }
+            self.players.get_mut(&token).unwrap().seat = None;
+            self.bot_turn = None;
+            self.update_phase();
+            self.broadcast();
+            format!("Bot removed from seat {}.", seat + 1)
+        }
+    }
+
+    fn tick_bot(&mut self, now: Instant) {
+        let view = self.game.public();
+        if self.phase != "playing"
+            || self.pending_blunder.is_some()
+            || self.reveal_until.is_some_and(|end| now < end)
+            || self.deal_ready.is_some_and(|end| now < end)
+        {
+            self.bot_turn = None;
+            return;
+        }
+        let Some(seat) = view.current.filter(|seat| {
+            self.players
+                .values()
+                .any(|p| p.bot && p.seat == Some(*seat))
+        }) else {
+            self.bot_turn = None;
+            return;
+        };
+        match self.bot_turn {
+            Some((round, turn, ready)) if round == view.round && turn == seat => {
+                if now < ready {
+                    return;
+                }
+            }
+            _ => {
+                self.bot_turn = Some((view.round, seat, now + Duration::from_secs(1)));
+                return;
+            }
+        }
+        self.bot_turn = None;
+        let cards = self.game.bot_play(seat);
+        let result = if cards.is_empty() {
+            self.game.draw(seat)
+        } else {
+            let result = self.game.submit(seat, &cards);
+            if result.is_ok() {
+                self.reveal_until = Some(now + reveal_duration(cards.len()));
+                if self.game.hand(seat).len() == 1 {
+                    if let Err(err) = self.game.call_last_card(seat) {
+                        eprintln!("Bot could not call Last Card: {err}");
+                    }
+                }
+            }
+            result
+        };
+        if let Err(err) = result {
+            eprintln!("Bot at seat {} could not play: {err}", seat + 1);
+        }
+        self.logged_turn = None;
+        self.update_phase();
+        self.broadcast();
+    }
+
     fn console_prank(&mut self, effect: &str, target: &str) -> String {
         if target.is_empty() {
-            return format!("Usage: {effect} <username> or {effect} #<seat number>.");
+            return format!("Usage: {effect} <username> or {effect} <seat number>.");
         }
         let player = match self.prank_player(target) {
             Ok(player) => player,
@@ -639,11 +816,11 @@ impl Room {
             rest = remaining.trim_start();
         }
         let [source, target] = targets.as_slice() else {
-            return "Usage: teabag <player1> <player2>. Quote names with spaces or use #seat."
+            return "Usage: teabag <player1> <player2>. Quote names with spaces or use seat numbers."
                 .into();
         };
         if !rest.is_empty() {
-            return "Usage: teabag <player1> <player2>. Quote names with spaces or use #seat."
+            return "Usage: teabag <player1> <player2>. Quote names with spaces or use seat numbers."
                 .into();
         }
         let source = match self.prank_player(source) {
@@ -678,7 +855,7 @@ impl Room {
             match target.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
                 Some(name) if !name.is_empty() && !name.contains('"') => name,
                 _ => {
-                    return Err("Invalid target. Use a quoted username or #<seat number>.".into());
+                    return Err("Invalid target. Use a quoted username or <seat number>.".into());
                 }
             }
         } else {
@@ -687,10 +864,14 @@ impl Room {
         let candidates: Vec<&Player> = self
             .players
             .values()
-            .filter(|p| p.session.is_some() && p.seat.is_some())
+            .filter(|p| (p.bot || p.session.is_some()) && p.seat.is_some())
             .collect();
-        let matches: Vec<&Player> = if !quoted && name.starts_with('#') {
-            let seat = name[1..]
+        let by_seat =
+            !quoted && (name.starts_with('#') || name.bytes().all(|c| c.is_ascii_digit()));
+        let matches: Vec<&Player> = if by_seat {
+            let seat = name
+                .strip_prefix('#')
+                .unwrap_or(name)
                 .parse::<usize>()
                 .ok()
                 .and_then(|n| n.checked_sub(1));
@@ -723,7 +904,7 @@ impl Room {
             [] => Err(
                 "No connected seated player matches that target. Use prank_help for usage.".into(),
             ),
-            _ => Err("Ambiguous player name. Use #<seat number> to choose a player.".into()),
+            _ => Err("Ambiguous player name. Use <seat number> to choose a player.".into()),
         }
     }
 
@@ -773,6 +954,7 @@ impl Room {
                 match self.game.start(&seats) {
                     Ok(()) => {
                         self.start_round_tracking(&seats);
+                        self.begin_deal(seats.len());
                         self.phase = "playing";
                         self.deadline = None;
                         self.reveal_until = None;
@@ -794,12 +976,12 @@ impl Room {
         let mut gestures = vec![Value::Null; 10];
         for p in self.players.values() {
             if let Some(seat) = p.seat {
-                seats[seat] = json!({"profile":p.profile,"connected":p.session.is_some()});
+                seats[seat] = json!({"profile":p.profile,"connected":p.bot || p.session.is_some()});
                 if p.session.is_some() {
-                    let look = p.look.and_then(|(session, _)| {
+                    let look = p.look.as_ref().and_then(|(token, _)| {
                         self.players
-                            .values()
-                            .find(|target| target.session == Some(session))
+                            .get(token)
+                            .filter(|target| target.bot || target.session.is_some())
                             .and_then(|target| target.seat)
                     });
                     let emoji = p.emoji.map(|(name, _)| json!({"name":name}));
@@ -942,8 +1124,41 @@ impl Room {
             }
             return;
         }
-        if verb == "admin" || matches!(verb, "game_start" | "game_restart" | "password_set") {
+        if verb == "admin"
+            || matches!(
+                verb,
+                "game_start"
+                    | "game_restart"
+                    | "password_set"
+                    | "player_list"
+                    | "bot_add"
+                    | "bot_remove"
+                    | "admin_add"
+                    | "admin_remove"
+                    | "admin_list"
+            )
+        {
             self.admin_chat(token, send, if verb == "admin" { args } else { command });
+            return;
+        }
+        let is_admin = self.players[token]
+            .identity
+            .as_ref()
+            .is_some_and(|identity| identity.verified && self.admins.contains(&identity.id));
+        let legacy_target = verb == "teabag"
+            && args.split_whitespace().count() == 1
+            && args
+                .strip_prefix('#')
+                .unwrap_or(args)
+                .parse::<usize>()
+                .is_ok();
+        if is_admin
+            && (verb == "prank_help"
+                || (!args.is_empty()
+                    && (SELF_PRANKS.contains(&verb) || matches!(verb, "bomb" | "teabag"))
+                    && !legacy_target))
+        {
+            self.admin_chat(token, send, command);
             return;
         }
         let mut parts = args.split_whitespace();
@@ -953,7 +1168,7 @@ impl Room {
                 Self::chat_notice(
                     send,
                     &format!(
-                        "Pranks: /{}. Use /bomb #N or /teabag #N to target another connected player's seat.",
+                        "Pranks: /{}. Use /bomb <seat> or /teabag <seat> to target another connected player's seat.",
                         SELF_PRANKS.join(", /")
                     ),
                 );
@@ -974,7 +1189,7 @@ impl Room {
             Self::chat_notice(
                 send,
                 if targeted {
-                    "Usage: /bomb #N or /teabag #N"
+                    "Usage: /bomb <seat> or /teabag <seat>"
                 } else {
                     "This prank takes no arguments."
                 },
@@ -993,7 +1208,7 @@ impl Room {
                     && self
                         .players
                         .values()
-                        .any(|p| p.seat == Some(*target) && p.session.is_some())
+                        .any(|p| p.seat == Some(*target) && (p.bot || p.session.is_some()))
             }) else {
                 Self::chat_notice(send, "Choose another connected player's seat number.");
                 return;
@@ -1034,11 +1249,8 @@ impl Room {
         match command.split_whitespace().next() {
             None => Self::chat_notice(
                 send,
-                "Use /admin <command>. Commands include game_start, game_restart, password_set and prank_help.",
+                "Use /admin <command>. Commands include game_start, game_restart, password_set, player_list, bot_add, bot_remove, admin_add, admin_remove, admin_list and prank_help.",
             ),
-            Some("admin_add" | "admin_remove" | "admin_list") => {
-                Self::chat_notice(send, "Manage administrators from the server console.")
-            }
             Some(_) => {
                 eprintln!("Admin {} ran a command from chat.", identity.id);
                 if let Some(response) = self.execute_server_command(command) {
@@ -1114,8 +1326,9 @@ impl Room {
             let token = if let Some(token) =
                 value.get("token").and_then(Value::as_str).filter(|t| {
                     self.players.get(*t).is_some_and(|player| {
-                        !player.identity.as_ref().is_some_and(|id| id.verified)
-                            || player.identity == identity
+                        !player.bot
+                            && (!player.identity.as_ref().is_some_and(|id| id.verified)
+                                || player.identity == identity)
                     })
                 }) {
                 let p = self.players.get_mut(token).unwrap();
@@ -1159,6 +1372,7 @@ impl Room {
                 self.players.insert(
                     token.clone(),
                     Player {
+                        bot: false,
                         profile,
                         identity,
                         seat: None,
@@ -1334,17 +1548,19 @@ impl Room {
             }
             "look" => {
                 let target = value.get("seat").and_then(Value::as_u64);
-                let target_session = target.and_then(|target| {
+                let target_token = target.and_then(|target| {
                     self.players
-                        .values()
-                        .find(|p| {
-                            p.seat.map(|index| index as u64) == Some(target) && p.seat != seat
+                        .iter()
+                        .find(|(_, p)| {
+                            p.seat.map(|index| index as u64) == Some(target)
+                                && p.seat != seat
+                                && (p.bot || p.session.is_some())
                         })
-                        .and_then(|p| p.session)
+                        .map(|(token, _)| token.clone())
                 });
-                if let (Some(_), Some(target_session)) = (seat, target_session) {
+                if let (Some(_), Some(target_token)) = (seat, target_token) {
                     self.players.get_mut(&token).unwrap().look =
-                        Some((target_session, Instant::now() + Duration::from_secs(5)));
+                        Some((target_token, Instant::now() + Duration::from_secs(5)));
                     Ok(())
                 } else {
                     Err("Choose another connected player while seated".into())
@@ -1488,7 +1704,7 @@ impl Room {
         let now = Instant::now();
         let mut gestures_expired = false;
         for p in self.players.values_mut() {
-            if p.look.is_some_and(|(_, end)| now >= end) {
+            if p.look.as_ref().is_some_and(|(_, end)| now >= *end) {
                 p.look = None;
                 gestures_expired = true;
             }
@@ -1574,6 +1790,7 @@ impl Room {
             }
         }
         self.update_phase();
+        self.tick_bot(now);
         if gestures_expired
             || had_expired
             || before

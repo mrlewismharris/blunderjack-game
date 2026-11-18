@@ -273,6 +273,42 @@ impl Game {
             }
         })
     }
+    /// Select a legal play using only this seat's hand and the board. An empty
+    /// result means the bot should draw.
+    pub fn bot_play(&self, seat: usize) -> Vec<u32> {
+        if self.check_turn(seat).is_err() || self.pot.is_empty() {
+            return Vec::new();
+        }
+        let hand = self.hand(seat);
+        let mut best = Vec::new();
+        // Try several legal starting cards, then greedily extend each chain.
+        // The fixed number of starts keeps large penalty hands manageable.
+        for &first in hand.iter().filter(|&&card| self.legal(&[card])).take(16) {
+            let mut chain = vec![first];
+            loop {
+                let next = hand.iter().copied().find(|card| {
+                    if chain.iter().any(|played| played.id == card.id) {
+                        return false;
+                    }
+                    chain.push(*card);
+                    let valid = self.legal(&chain);
+                    chain.pop();
+                    valid
+                });
+                match next {
+                    Some(card) => chain.push(card),
+                    None => break,
+                }
+            }
+            if chain.len() > best.len() {
+                best = chain;
+            }
+            if best.len() == hand.len() {
+                break;
+            }
+        }
+        best.into_iter().map(|card| card.id).collect()
+    }
     fn draw_cards(&mut self, seat: usize, count: usize) -> usize {
         let mut drawn = 0;
         for _ in 0..count {

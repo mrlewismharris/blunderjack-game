@@ -849,6 +849,7 @@ body:has(.intro-running) {
 }
 .activity-entry.activity-notice {
   color: #bfc8d4;
+  white-space: pre-wrap;
   user-select: text;
 }
 .chat-form {

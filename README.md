@@ -27,9 +27,17 @@ Type `password_set "your password"` in the server console to require a password 
 
 Hold `Tab` at the table to see first-, second- and third-place finishes, losses, and estimated one-way ping. A round continues until the podium is decided. If only one player remains, they take the next available place. Scores last for the server session. Ping is half the server’s measured round-trip time.
 
+### Playing with bots
+
+Use `bot_add 2` in the server console to add a bot to seat 2, and `bot_remove 2` to remove it. Seat numbers run from 1 to 10. Occupied seats, including disconnected players' reserved seats, cannot be replaced, and `bot_remove` cannot remove a human. Verified admins can use the same commands in chat as `/bot_add 2` and `/bot_remove 2`.
+
+Bots count toward the two-player minimum, so you can play against one bot or watch a table of bots. Use `game_start` for the first deal as usual. Bots added during a round join the next deal; removing an active bot returns its cards and advances the game normally. Wait for any pending Blunder ruling before removing a bot.
+
+Bots play legal card chains using their own hand and the public table, draw when they cannot play, and call Last Card. They respect dealing and reveal animations and the finishing challenge window. These simple bots do not bluff or call Blunder. Bots remain seated between rounds but are not saved across server restarts.
+
 ### Console pranks
 
-Type `prank_help` to list the commands. Pass a seated player's name in quotes, as in `grow_head "John Smith"`, or use their seat number, as in `grow_head #3`. Everyone at the table sees the effect for a few seconds.
+Type `prank_help` to list the commands. Pass a seated player's name in quotes, as in `grow_head "John Smith"`, or use their seat number, as in `grow_head 3`. Seat numbers do not need a `#` prefix, although the old form still works. Quote a numeric username to target it by name. Everyone at the table sees the effect for a few seconds.
 
 | Command | Effect |
 | --- | --- |
@@ -40,17 +48,19 @@ Type `prank_help` to list the commands. Pass a seated player's name in quotes, a
 | `disco` | Cycles through sweater colours. |
 | `pancake` | Squashes the player flat and wide. |
 | `bomb` | Sends a cartoon plane over the table to drop a mushroom cloud on the target. |
-| `teabag #1 #3` | Makes the first player hop around the table, bounce on the second player's head, and return to their chair. |
+| `teabag 1 3` | Makes the first player hop around the table, bounce on the second player's head, and return to their chair. |
 
-Use **Activity and Chat** to talk to everyone at the table. Type `/prank_help` to see the available chat commands. Commands like `/grow_head` affect your character. Use `/bomb #3` or `/teabag #3` to target another player by the seat number beside their name.
+Use **Activity and Chat** to talk to everyone at the table. Type `/prank_help` to see the available chat commands. Commands like `/grow_head` affect your character. Use `/bomb 3` or `/teabag 3` to target another player by the seat number beside their name.
 
 ### Chat administration
 
 1. Connect over localhost, or use a `wss://` connection for remote administration. In a remote browser, open the game over HTTPS as well.
-2. Type `/id` in chat to get your verified client ID. The server console also prints it at join. The ID persists in the client profile for that server address.
+2. Type `player_list` in the server console to list all connected players, their connection IP addresses, and client IDs. Players can also type `/id` in chat to see their own ID. The ID persists in the client profile for that server address.
 3. In the server console, run `admin_add <client ID>`. Use `admin_list` to list administrators and `admin_remove <client ID>` to revoke access. The server saves these IDs in `blunderjack-admins-<port>.txt` in its working directory.
 
-Admins can use `/game_start`, `/game_restart`, or `/password_set "password"` directly in chat. Run any other game console command with `/admin`, for example `/admin grow_head #3`. Replies appear only in your own activity log. Plain remote WebSocket connections receive an unverified player ID and can use regular chat and pranks.
+Admins can run any server console command directly in chat with a leading `/`, including `/player_list`, `/bot_add <seat>`, `/bot_remove <seat>`, `/admin_add <client ID>`, `/admin_remove <client ID>`, `/admin_list`, `/game_start`, `/game_restart`, and `/password_set "password"`. Targeted pranks accept the same player names or seat numbers as the console, for example `/grow_head 3` or `/teabag 1 3`. Existing self-pranks and the single-target `/teabag <seat>` shortcut still work, and the `/admin <command>` prefix remains supported. Replies, including player IP addresses, appear only in the requesting admin's activity log. Plain remote WebSocket connections receive an unverified player ID and can use regular chat and pranks.
+
+The listed IP is the server's direct connection peer, so deployments behind a reverse proxy show the proxy's address. Older clients without identity support are listed with an unavailable client ID and cannot receive admin access.
 
 Drag the table to orbit, middle-drag to pan, and scroll to zoom. The camera follows the active player by default. Use **Centre Camera** to see the whole table or turn **Follow** off to keep your own angle. Drag the floating controls by their handle to move them, and press `Esc` to open the table menu. When the table has keyboard focus, use the arrow keys to look around, `+` and `-` to zoom, and `Home` to centre the camera.
 
