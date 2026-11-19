@@ -1,6 +1,6 @@
 [package]
 name = "blunderjack"
-version = "0.1.1"
+version = "0.1.11"
 edition = "2024"
 default-run = "blunderjack-client"
 
