@@ -150,6 +150,35 @@ function makePokerTable(scene) {
   layer(seam, 3.7, 1.25, 1.04, 1.163, 0.025, 0.009);
   layer(felt, 3.65, 1.2, 1, 1.185, 0.025, 0.008);
 
+  const title = document.getElementById("game-title");
+  const titleStyle = getComputedStyle(title);
+  const logoCanvas = document.createElement("canvas");
+  logoCanvas.width = 768;
+  logoCanvas.height = 160;
+  const ink = logoCanvas.getContext("2d");
+  ink.font = `${titleStyle.fontWeight} 128px ${titleStyle.fontFamily}`;
+  ink.letterSpacing = "-5px";
+  ink.textAlign = "center";
+  ink.textBaseline = "middle";
+  ink.fillStyle = "#f8f6e9";
+  ink.fillText(title.textContent, 384, 80, 744);
+  const logoTexture = new THREE.CanvasTexture(logoCanvas);
+  logoTexture.colorSpace = THREE.SRGBColorSpace;
+  const logo = mesh(
+    scene,
+    new THREE.PlaneGeometry(2.1, 2.1 * logoCanvas.height / logoCanvas.width),
+    material(0xffffff, {
+      map: logoTexture,
+      roughness: 1,
+      transparent: true,
+      opacity: 0.78,
+      depthWrite: false,
+    }),
+    0, TABLE_TOP, 0,
+  );
+  logo.rotation.x = -Math.PI / 2;
+  logo.castShadow = false;
+
   for (const x of [-1.96, 1.96]) {
     box(scene, apron, [0.68, 0.82, 0.74], [x, 0.42, 0]);
     box(scene, rail, [0.96, 0.14, 1.13], [x, 0.09, 0]);
